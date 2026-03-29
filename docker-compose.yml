@@ -1,0 +1,11 @@
+services:
+  soc-simulator:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      # Persist trained Q-tables and score files between runs
+      - ./training:/adaptive_cyber_defense/training
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped

@@ -1,0 +1,272 @@
+##############################################################################
+# openenv.yaml — Adaptive Cyber Defense Simulator
+# OpenEnv-compliant environment manifest
+# https://openenv.dev/spec/v1
+##############################################################################
+
+spec_version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+id: adaptive_cyber_defense
+name: Adaptive Cyber Defense Simulator
+version: "1.0.0"
+description: >
+  A realistic Security Operations Centre (SOC) simulation where an agent
+  must detect, prioritise, and contain cyber threats progressing through a
+  kill-chain (Phishing → Credential Access → Malware Install → Lateral
+  Spread → Exfiltration) on an 8-node enterprise network.  The environment
+  supports three difficulty tiers (easy / medium / hard) and exposes a
+  standard OpenEnv API: reset(seed) → state, step(action) → (state, reward,
+  done, info), state() → state.
+
+tags:
+  - cybersecurity
+  - network-defense
+  - soc-simulation
+  - multi-threat
+  - partially-observable
+
+authors:
+  - name: "Adaptive Cyber Defense Team"
+
+# ---------------------------------------------------------------------------
+# Environment API
+# ---------------------------------------------------------------------------
+api:
+  type: openenv
+  entry_point: "adaptive_cyber_defense:AdaptiveCyberDefenseEnv"
+
+  reset:
+    signature: "reset(seed: int = 0) -> EnvironmentState"
+    description: >
+      Initialise (or re-initialise) the episode.  Rebuilds the 8-node
+      network, places initial threats, resets all engines, and returns the
+      first state snapshot.  Passing the same seed guarantees an identical
+      episode trajectory.
+
+  step:
+    signature: "step(action: ActionInput) -> tuple[EnvironmentState, float, bool, dict]"
+    description: >
+      Advance the simulation by one time step.  Returns (new_state, reward,
+      done, info).  reward is in [0.0, 1.0].  info contains keys:
+      step, resource_utilisation, threats_active, compromised_nodes,
+      reward_breakdown, lateral_events, detection_events.
+
+  state:
+    signature: "state() -> EnvironmentState"
+    description: >
+      Return a deep copy of the current environment state without advancing
+      the simulation.  Safe to call between reset() and the first step().
+
+# ---------------------------------------------------------------------------
+# Observation space
+# ---------------------------------------------------------------------------
+observation:
+  type: structured          # also exportable as a flat float vector via to_vector()
+  vector_length: dynamic    # depends on active threat count; use to_vector()
+
+  fields:
+    assets:
+      type: dict[str, NetworkAsset]
+      description: "Keyed by node ID.  Each asset has health, patch_level, criticality, is_compromised, is_isolated."
+
+    active_threats:
+      type: list[Threat]
+      description: >
+        Non-contained threats.  Each Threat has: id, stage (AttackStage),
+        origin_node, current_node, severity [0,1], detection_confidence [0,1],
+        is_detected, persistence, spread_potential, steps_active, is_contained.
+
+    compromised_nodes:
+      type: list[str]
+      description: "Node IDs of currently compromised assets."
+
+    resource_pool:
+      type: ResourcePool
+      description: "remaining / total resources for this step."
+
+    threat_severity:
+      type: float
+      range: [0.0, 1.0]
+      description: "Aggregate severity across all active threats."
+
+    network_load:
+      type: float
+      range: [0.0, 1.0]
+      description: "Criticality-weighted network stress metric."
+
+    detection_events:
+      type: list[DetectionEvent]
+      description: "Detection outcomes from the last step (may include false positives)."
+
+    step:
+      type: int
+      description: "Current step index (0-based)."
+
+    episode_score:
+      type: float
+      range: [0.0, 1.0]
+      description: "Running cumulative episode score."
+
+    is_terminal:
+      type: bool
+      description: "True if the episode has ended."
+
+# ---------------------------------------------------------------------------
+# Action space
+# ---------------------------------------------------------------------------
+action:
+  type: discrete_parameterised
+  class: "adaptive_cyber_defense.models.action.ActionInput"
+
+  actions:
+    BLOCK_IP:
+      code: 0
+      required_params: [target_node]
+      optional_params: [target_threat_id]
+      resource_cost: 0.30
+      description: "Block network traffic at a node.  Best at early kill-chain stages."
+
+    ISOLATE_NODE:
+      code: 1
+      required_params: [target_node]
+      resource_cost: 0.50
+      description: "Network-isolate an asset.  High availability cost; stops lateral spread."
+
+    PATCH_SYSTEM:
+      code: 2
+      required_params: [target_node]
+      resource_cost: 0.40
+      description: "Apply security patches (+0.20 patch_level).  Preventive; low late-stage value."
+
+    RUN_DEEP_SCAN:
+      code: 3
+      required_params: [target_node]
+      resource_cost: 0.35
+      description: "Trigger deep forensic scan.  Boosts detection confidence in next step."
+
+    IGNORE:
+      code: 4
+      required_params: []
+      resource_cost: 0.00
+      description: "Take no action.  Conserves resources; no containment effect."
+
+# ---------------------------------------------------------------------------
+# Reward
+# ---------------------------------------------------------------------------
+reward:
+  range: [0.0, 1.0]
+  description: "Multi-component reward, clamped to [0, 1]."
+  components:
+    containment_bonus:   "Positive for each threat newly contained (speed-weighted)."
+    severity_reduction:  "Positive when aggregate threat severity decreases."
+    efficiency_bonus:    "Rewards proportional resource conservation."
+    survival_bonus:      "Health of critical assets (criticality >= 0.7)."
+    spread_penalty:      "Negative for each lateral movement event."
+    waste_penalty:       "Negative for wasted/redundant actions."
+    false_positive_penalty: "Negative when false-positive detections occur."
+    availability_penalty:   "Negative proportional to isolation-induced downtime."
+
+# ---------------------------------------------------------------------------
+# Termination conditions
+# ---------------------------------------------------------------------------
+termination:
+  - condition: all_threats_contained
+    description: "All tracked threats have is_contained=True."
+  - condition: critical_asset_failure
+    description: "Any asset with criticality >= 0.9 reaches health == 0."
+  - condition: max_steps
+    description: "Step count reaches EnvConfig.max_steps."
+
+# ---------------------------------------------------------------------------
+# Task variants (difficulty tiers)
+# ---------------------------------------------------------------------------
+tasks:
+  easy:
+    entry_point: "adaptive_cyber_defense.tasks:EasyTask"
+    max_steps: 30
+    initial_threats: 1
+    resource_per_step: 1.50
+    base_detection_prob: 0.75
+    attack_progression_prob: 0.12
+    lateral_spread_prob: 0.08
+    passing_score: 0.60
+    description: "Single-threat, well-resourced scenario.  Suitable for initial training."
+
+  medium:
+    entry_point: "adaptive_cyber_defense.tasks:MediumTask"
+    max_steps: 50
+    initial_threats: 2
+    resource_per_step: 0.75
+    base_detection_prob: 0.55
+    attack_progression_prob: 0.25
+    lateral_spread_prob: 0.22
+    passing_score: 0.55
+    description: "Dual-threat with moderate detection noise and resource pressure."
+
+  hard:
+    entry_point: "adaptive_cyber_defense.tasks:HardTask"
+    max_steps: 50
+    initial_threats: 3
+    resource_per_step: 0.55
+    base_detection_prob: 0.38
+    false_positive_rate: 0.20
+    false_negative_rate: 0.30
+    attack_progression_prob: 0.38
+    lateral_spread_prob: 0.35
+    passing_score: 0.45
+    description: >
+      APT-level campaign: 3 simultaneous threats, high false-positive noise,
+      low detection baseline, aggressive kill-chain progression.
+
+# ---------------------------------------------------------------------------
+# Network topology
+# ---------------------------------------------------------------------------
+network:
+  nodes: 8
+  topology: "hub-and-spoke with firewall boundary"
+  assets:
+    fw-01:    { type: FIREWALL,    criticality: 0.90 }
+    router-01:{ type: ROUTER,     criticality: 0.85 }
+    srv-web:  { type: SERVER,     criticality: 0.70 }
+    srv-db:   { type: SERVER,     criticality: 0.95 }
+    db-01:    { type: DATABASE,   criticality: 1.00 }
+    ws-01:    { type: WORKSTATION,criticality: 0.30 }
+    ws-02:    { type: WORKSTATION,criticality: 0.30 }
+    ws-03:    { type: WORKSTATION,criticality: 0.30 }
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+reproducibility:
+  seeded: true
+  seed_param: seed
+  guarantee: >
+    Identical seed values passed to reset() produce byte-identical episode
+    trajectories regardless of Python version (3.9+) or platform.  All
+    randomness is routed through a single seeded random.Random instance
+    created at reset time.
+
+# ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+benchmarks:
+  - name: random_agent
+    description: "Uniformly random actions over the discrete action set."
+    expected_score_easy:   ~0.30
+    expected_score_medium: ~0.22
+    expected_score_hard:   ~0.18
+
+  - name: ignore_agent
+    description: "Always IGNORE; useful lower-bound baseline."
+    expected_score_easy:   ~0.38
+    expected_score_medium: ~0.29
+    expected_score_hard:   ~0.22
+
+  - name: greedy_baseline
+    description: "Rule-based agent using DecisionEngine recommendations."
+    expected_score_easy:   ~0.65
+    expected_score_medium: ~0.52
+    expected_score_hard:   ~0.43
