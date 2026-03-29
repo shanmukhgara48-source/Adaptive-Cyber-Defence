@@ -6,7 +6,7 @@
     {
       "name": "HF Space health check",
       "status": "pass",
-      "detail": "status=200 body='ok' (1325ms)"
+      "detail": "status=200 body='ok' (982ms)"
     },
     {
       "name": "HF Space main URL reachable",
@@ -306,7 +306,7 @@
     {
       "name": "Git has commits",
       "status": "pass",
-      "detail": "8316b31 Add adaptive red team attacker with defender profili"
+      "detail": "b1c23d5 Pre-submission validator fixes"
     },
     {
       "name": "No uncommitted changes",
