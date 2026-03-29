@@ -76,8 +76,11 @@ class LLMAgent:
     def _build_prompt(state: EnvironmentState) -> str:
         threats_text = ""
         for t in state.active_threats[:5]:    # cap to keep prompt short
+            tid   = getattr(t, "mitre_technique_id",   "") or t.stage.technique_id
+            tname = getattr(t, "mitre_technique_name", "") or t.stage.technique_name
             threats_text += (
-                f"  - {t.id}: stage={t.stage.name} severity={t.severity:.2f} "
+                f"  - {t.id}: stage={t.stage.name} [{tid} {tname}]"
+                f" severity={t.severity:.2f} "
                 f"node={t.current_node} detected={'yes' if t.is_detected else 'no'}\n"
             )
         if not threats_text:

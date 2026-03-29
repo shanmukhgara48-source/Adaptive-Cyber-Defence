@@ -27,6 +27,7 @@ from typing import List, Optional, Tuple
 
 from ..models.network import NetworkGraph
 from ..models.state import AttackStage, NetworkAsset, Threat
+from ..models.threat import get_mitre_info
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +231,12 @@ class AttackEngine:
             clone = threat.clone()
             clone.stage = next_stage
             clone.steps_at_current_stage = 0   # reset dwell counter on transition
+            # Update MITRE fields to reflect new stage
+            mitre = get_mitre_info(next_stage.name)
+            clone.mitre_technique_id   = mitre["technique_id"]
+            clone.mitre_technique_name = mitre["technique_name"]
+            clone.mitre_tactic         = mitre["tactic"]
+            clone.mitre_tactic_id      = mitre["tactic_id"]
             return clone
 
         return threat
@@ -323,6 +330,7 @@ class AttackEngine:
 
         # Spawn child threat at PHISHING stage on target
         self._threat_counter += 1
+        _mitre_phishing = get_mitre_info("PHISHING")
         child = Threat(
             id=f"threat-{self._threat_counter:03d}",
             stage=AttackStage.PHISHING,       # attacker re-establishes foothold
@@ -334,6 +342,10 @@ class AttackEngine:
             persistence=0.05,                  # not yet entrenched
             spread_potential=threat.spread_potential * rng.uniform(0.7, 1.0),
             steps_active=0,
+            mitre_technique_id=_mitre_phishing["technique_id"],
+            mitre_technique_name=_mitre_phishing["technique_name"],
+            mitre_tactic=_mitre_phishing["tactic"],
+            mitre_tactic_id=_mitre_phishing["tactic_id"],
         )
 
         return LateralMovementEvent(

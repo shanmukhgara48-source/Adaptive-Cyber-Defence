@@ -1075,9 +1075,14 @@ with col_threats:
                     f"Persistence: {threat.persistence:.2f}  |  "
                     f"Detected: {'✅' if threat.is_detected else '❌'}"
                 )
-                st.caption(
-                    f"🔬 **MITRE:** `{threat.stage.technique_id}` — {threat.stage.technique_name}"
-                )
+                # MITRE ATT&CK — prefer live fields, fall back to stage properties
+                _tid   = getattr(threat, "mitre_technique_id",   "") or threat.stage.technique_id
+                _tname = getattr(threat, "mitre_technique_name", "") or threat.stage.technique_name
+                _tact  = getattr(threat, "mitre_tactic",         "") or threat.stage.tactic
+                _m1, _m2, _m3 = st.columns(3)
+                _m1.markdown(f"**Technique**  \n`{_tid}`")
+                _m2.markdown(f"**Name**  \n{_tname}")
+                _m3.markdown(f"**Tactic**  \n{_tact}")
 
     st.markdown("---")
 

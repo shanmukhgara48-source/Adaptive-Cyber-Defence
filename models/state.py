@@ -78,6 +78,24 @@ class AttackStage(Enum):
         }
         return _map.get(self.value, "Unknown Technique")
 
+    @property
+    def tactic(self) -> str:
+        """MITRE ATT&CK tactic name for this kill-chain stage."""
+        _map = {
+            0: "Initial Access",
+            1: "Credential Access",
+            2: "Execution",
+            3: "Lateral Movement",
+            4: "Exfiltration",
+        }
+        return _map.get(self.value, "Unknown")
+
+    @property
+    def tactic_id(self) -> str:
+        """MITRE ATT&CK tactic ID for this kill-chain stage."""
+        _map = {0: "TA0001", 1: "TA0006", 2: "TA0002", 3: "TA0008", 4: "TA0010"}
+        return _map.get(self.value, "TA0000")
+
 
 # ---------------------------------------------------------------------------
 # Network asset
@@ -249,6 +267,10 @@ class Threat:
     steps_at_current_stage: int = 0  # steps spent at the current kill-chain stage
     timestamp: float = field(default_factory=time.time)
     attack_type: str = "generic"   # e.g. "apt", "ransomware", "ddos", etc.
+    mitre_technique_id: str = ""
+    mitre_technique_name: str = ""
+    mitre_tactic: str = ""
+    mitre_tactic_id: str = ""
 
     @property
     def target_node(self) -> str:

@@ -51,9 +51,11 @@ def _threat_to_dict(t) -> dict:
         "is_contained":         t.is_contained,
         "steps_active":         t.steps_active,
         "attack_type":          getattr(t, "attack_type", "generic"),
-        # MITRE ATT&CK
-        "technique_id":         t.stage.technique_id,
-        "technique_name":       t.stage.technique_name,
+        # MITRE ATT&CK — prefer live fields, fall back to stage properties
+        "technique_id":         getattr(t, "mitre_technique_id", "") or t.stage.technique_id,
+        "technique_name":       getattr(t, "mitre_technique_name", "") or t.stage.technique_name,
+        "tactic":               getattr(t, "mitre_tactic", "") or t.stage.tactic,
+        "tactic_id":            getattr(t, "mitre_tactic_id", "") or t.stage.tactic_id,
     }
 
 

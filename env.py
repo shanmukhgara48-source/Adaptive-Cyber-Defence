@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .engines.attack import AttackEngine, AttackEngineConfig, LateralMovementEvent
 from .engines.detection import DetectionSystem, DetectionConfig, DetectionEvent
+from .models.threat import get_mitre_info
 from .engines.scoring import ThreatScorer, ThreatScore
 from .engines.decision import (
     ActionMemory, DecisionEngine, DecisionConfig,
@@ -407,6 +408,7 @@ class AdaptiveCyberDefenseEnv:
             k=min(self.config.initial_threat_count, len(workstations)),
         )
 
+        mitre = get_mitre_info("PHISHING")
         threats = []
         for i, node_id in enumerate(entry_nodes):
             threat = Threat(
@@ -420,6 +422,10 @@ class AdaptiveCyberDefenseEnv:
                 persistence=self._rng.uniform(0.1, 0.4),
                 spread_potential=self._rng.uniform(0.2, 0.5),
                 steps_active=0,
+                mitre_technique_id=mitre["technique_id"],
+                mitre_technique_name=mitre["technique_name"],
+                mitre_tactic=mitre["tactic"],
+                mitre_tactic_id=mitre["tactic_id"],
             )
             threats.append(threat)
         return threats

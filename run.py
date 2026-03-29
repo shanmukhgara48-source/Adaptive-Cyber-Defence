@@ -92,6 +92,8 @@ def _build_agent(name: str):
 
 def run_verbose(task, agent, seed: int):
     """Run one episode, printing per-step detail to stdout."""
+    from adaptive_cyber_defense.models.threat import generate_mitre_summary
+
     env = task.build_env()
     state = env.reset(seed=seed)
 
@@ -104,6 +106,7 @@ def run_verbose(task, agent, seed: int):
     step_rewards: list[float] = []
     done = False
     step = 0
+    all_threats = list(state.active_threats)
 
     while not done:
         recs = env.recommend()
@@ -111,20 +114,38 @@ def run_verbose(task, agent, seed: int):
         state, reward, done, info = env.step(action)
         step += 1
         step_rewards.append(reward)
+        all_threats.extend(state.active_threats)
 
         bd = info.get("reward_breakdown", {})
         threats_active = info.get("threats_active", "?")
         action_name = action.action.name
         target = action.target_node or "-"
 
+        # Show MITRE technique for the top active threat
+        mitre_tag = ""
+        if state.active_threats:
+            top = max(state.active_threats, key=lambda t: t.effective_severity())
+            tid  = getattr(top, "mitre_technique_id", "") or top.stage.technique_id
+            tname = getattr(top, "mitre_technique_name", "") or top.stage.technique_name
+            mitre_tag = f" [{tid} {tname}]"
+
         print(
             f"  step {step:3d} | {action_name:<14} -> {target:<12} | "
             f"reward={reward:.4f} | "
-            f"threats_active={threats_active} | "
+            f"threats_active={threats_active}{mitre_tag} | "
             f"containment={bd.get('containment', 0):.3f}  "
             f"survival={bd.get('survival', 0):.3f}  "
             f"waste={bd.get('waste_penalty', 0):.3f}"
         )
+
+    # MITRE ATT&CK summary table
+    mitre_counts = generate_mitre_summary(all_threats)
+    if mitre_counts:
+        print(f"\n{'─'*60}")
+        print("MITRE ATT&CK Techniques Observed:")
+        print(f"  {'Technique ID':<12}  {'Count':>5}")
+        for tid, cnt in sorted(mitre_counts.items()):
+            print(f"  {tid:<12}  {cnt:>5}")
 
     result = task.run.__func__  # unused — build TaskResult manually via run()
     # Re-run via task.run() for proper TaskResult (verbose run was for display only)
