@@ -4,5 +4,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . /adaptive_cyber_defense/
 WORKDIR /adaptive_cyber_defense
-EXPOSE 8501
-CMD ["streamlit", "run", "ui.py", "--server.port=8501", "--server.address=0.0.0.0"]
+EXPOSE 7860
+CMD ["streamlit", "run", "ui.py", \
+     "--server.port=7860", \
+     "--server.address=0.0.0.0", \
+     "--server.headless=true", \
+     "--server.enableCORS=false", \
+     "--server.enableXsrfProtection=false"]
