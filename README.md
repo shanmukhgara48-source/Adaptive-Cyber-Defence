@@ -1,3 +1,16 @@
+---
+title: Adaptive Cyber Defense Simulator
+emoji: 🛡️
+colorFrom: red
+colorTo: purple
+sdk: docker
+pinned: false
+tags:
+  - openenv
+  - reinforcement-learning
+  - cybersecurity
+---
+
 # Adaptive Cyber Defense Simulator
 
 An OpenEnv-compliant reinforcement learning environment simulating a Security Operations Center (SOC) defending an enterprise network against multi-stage cyber attacks.
