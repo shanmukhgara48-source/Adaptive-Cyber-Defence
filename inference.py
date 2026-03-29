@@ -38,6 +38,8 @@ from openai import OpenAI
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=HF_TOKEN or "dummy-key",
+    max_retries=0,          # fail fast — no retries when creds are invalid
+    timeout=8.0,            # hard cap per call
 )
 
 # ── project imports ──────────────────────────────────────────────────────────
@@ -248,14 +250,16 @@ if __name__ == "__main__":
     print(f"HF_TOKEN     : {'set' if HF_TOKEN else 'not set (using dummy-key)'}")
     print()
 
-    agent = LLMAgent(client, MODEL_NAME, timeout=10.0)
+    # Use 1 episode per task for fast validation runs; bump via env var for full eval
+    _episodes = int(os.environ.get("INFERENCE_EPISODES", "1"))
+    agent = LLMAgent(client, MODEL_NAME, timeout=8.0)
 
     results = []
     t_start = time.time()
 
     for task_name in ["easy", "medium", "hard"]:
         print(f"--- Running task: {task_name} ---", flush=True)
-        score = run_task(task_name, agent, episodes=3)
+        score = run_task(task_name, agent, episodes=_episodes)
         record = {"task": task_name, "score": round(score, 4)}
         results.append(record)
         print(json.dumps(record), flush=True)

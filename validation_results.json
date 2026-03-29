@@ -1,0 +1,372 @@
+{
+  "passed": 71,
+  "failed": 0,
+  "warned": 2,
+  "checks": [
+    {
+      "name": "HF Space health check",
+      "status": "pass",
+      "detail": "status=200 body='ok' (1325ms)"
+    },
+    {
+      "name": "HF Space main URL reachable",
+      "status": "pass",
+      "detail": "status=200"
+    },
+    {
+      "name": "HF Space URL correct format",
+      "status": "pass",
+      "detail": "https://shanmukhgara-adaptive-cyber-defense.hf.space"
+    },
+    {
+      "name": "File exists: Dockerfile",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "File exists: openenv.yaml",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "File exists: inference.py",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "File exists: README.md",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "File exists: requirements.txt",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "File exists: run.py",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "File exists: ui.py",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile has port 7860",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile no port 8501",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile has EXPOSE",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile has CMD streamlit",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile has healthcheck",
+      "status": "warn",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile has server.address=0.0.0.0",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Dockerfile has headless=true",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "openenv.yaml has all required fields",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "openenv.yaml has 3+ tasks",
+      "status": "pass",
+      "detail": "Found 3 tasks"
+    },
+    {
+      "name": "Task 'easy' defined",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Task 'medium' defined",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Task 'hard' defined",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "All task passing_scores in [0.0, 1.0]",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "observation_space defined",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "action_space defined",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reward field defined",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "inference.py uses OpenAI client",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "inference.py reads API_BASE_URL",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "inference.py reads MODEL_NAME",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "inference.py reads HF_TOKEN",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "inference.py has main block",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "inference.py no import errors",
+      "status": "pass",
+      "detail": "1.3s"
+    },
+    {
+      "name": "inference.py runs under 20 min",
+      "status": "pass",
+      "detail": "Took 1.3s"
+    },
+    {
+      "name": "Environment class imports",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Environment instantiates",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() returns dict",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() has key 'active_threats'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() has key 'network_state'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() has key 'resources'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() has key 'step'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() has key 'score'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() step==0",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "reset() score==0.0",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "step() returns tuple",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "step() returns 4 items",
+      "status": "pass",
+      "detail": "Got 4 items"
+    },
+    {
+      "name": "step() obs is dict",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "step() reward is float",
+      "status": "pass",
+      "detail": "Got <class 'float'>"
+    },
+    {
+      "name": "step() done is bool",
+      "status": "pass",
+      "detail": "Got <class 'bool'>"
+    },
+    {
+      "name": "step() info is dict",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "step() reward in [-1,1]",
+      "status": "pass",
+      "detail": "Got 0.24"
+    },
+    {
+      "name": "state() returns dict",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "state() has key 'observation'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "state() has key 'step'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "state() has key 'score'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "state() has key 'done'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Task 'easy' runs end-to-end",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Task 'medium' runs end-to-end",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Task 'hard' runs end-to-end",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Reward always in [-1.0, 1.0]",
+      "status": "pass",
+      "detail": "Out of range: []"
+    },
+    {
+      "name": "HF git remote configured",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "Git has commits",
+      "status": "pass",
+      "detail": "8316b31 Add adaptive red team attacker with defender profili"
+    },
+    {
+      "name": "No uncommitted changes",
+      "status": "warn",
+      "detail": "Uncommitted changes \u2014 run git add + commit + push"
+    },
+    {
+      "name": "README has HF yaml header",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "README mentions action space",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "README mentions observation",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "README has setup/install",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "README has task descriptions",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "README mentions inference.py",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "README has baseline scores",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "requirements.txt has 'streamlit'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "requirements.txt has 'openai'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "requirements.txt has 'pyyaml'",
+      "status": "pass",
+      "detail": ""
+    },
+    {
+      "name": "requirements.txt has 'requests'",
+      "status": "pass",
+      "detail": ""
+    }
+  ]
+}
