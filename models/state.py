@@ -271,6 +271,9 @@ class Threat:
     mitre_technique_name: str = ""
     mitre_tactic: str = ""
     mitre_tactic_id: str = ""
+    # Extra evasion penalty applied by adaptive attacker strategies
+    # Subtracted from detection probability in DetectionSystem
+    detection_evasion: float = 0.0
 
     @property
     def target_node(self) -> str:

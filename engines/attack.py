@@ -119,9 +119,19 @@ class AttackEngine:
     new/cloned objects.
     """
 
-    def __init__(self, config: Optional[AttackEngineConfig] = None) -> None:
+    def __init__(
+        self,
+        config: Optional[AttackEngineConfig] = None,
+        overrides: Optional[dict] = None,
+    ) -> None:
         self.config = config or AttackEngineConfig()
         self._threat_counter: int = 0   # used to generate unique child IDs
+
+        # Adaptive attacker strategy overrides
+        _ov = overrides or {}
+        self._dwell_multiplier  = float(_ov.get("dwell_time_multiplier", 1.0))
+        self._detection_evasion = float(_ov.get("detection_evasion",     0.0))
+        self._spread_rate       = float(_ov.get("spread_rate",           1.0))
 
     # -----------------------------------------------------------------------
     # Public API
@@ -164,6 +174,9 @@ class AttackEngine:
             # 1. Increment age and stage dwell counter
             clone.steps_active += 1
             clone.steps_at_current_stage += 1
+
+            # Stamp evasion from current engine overrides
+            clone.detection_evasion = self._detection_evasion
 
             # 2. Grow persistence (attacker digs deeper over time)
             clone.persistence = min(
@@ -212,9 +225,9 @@ class AttackEngine:
             return threat   # already at final stage
 
         # Minimum dwell check: threat must spend at least min_stage_dwell steps
-        # at the current stage before it can attempt to advance.  This prevents
-        # a single-step PHISHING→EXFILTRATION run even at high base probability.
-        if threat.steps_at_current_stage < self.config.min_stage_dwell:
+        # (scaled by attacker dwell_multiplier) before it can attempt to advance.
+        effective_dwell = max(1, round(self.config.min_stage_dwell * self._dwell_multiplier))
+        if threat.steps_at_current_stage < effective_dwell:
             return threat
 
         vulnerability = asset.vulnerability_score() if asset else 0.5
@@ -231,6 +244,7 @@ class AttackEngine:
             clone = threat.clone()
             clone.stage = next_stage
             clone.steps_at_current_stage = 0   # reset dwell counter on transition
+            clone.detection_evasion = self._detection_evasion
             # Update MITRE fields to reflect new stage
             mitre = get_mitre_info(next_stage.name)
             clone.mitre_technique_id   = mitre["technique_id"]
@@ -300,7 +314,8 @@ class AttackEngine:
             0.90,
             self.config.lateral_movement_base_prob
             * threat.spread_potential
-            * self.config.spread_amplifier,
+            * self.config.spread_amplifier
+            * self._spread_rate,
         )
 
         if rng.random() >= move_prob:
@@ -342,6 +357,7 @@ class AttackEngine:
             persistence=0.05,                  # not yet entrenched
             spread_potential=threat.spread_potential * rng.uniform(0.7, 1.0),
             steps_active=0,
+            detection_evasion=self._detection_evasion,
             mitre_technique_id=_mitre_phishing["technique_id"],
             mitre_technique_name=_mitre_phishing["technique_name"],
             mitre_tactic=_mitre_phishing["tactic"],

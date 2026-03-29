@@ -93,11 +93,13 @@ class AdaptiveCyberDefenseEnv:
         self.config = config or EnvConfig()
 
         # Attack engine (Phase 2)
-        self._attack_engine = AttackEngine(AttackEngineConfig(
+        self._attack_config = AttackEngineConfig(
             stage_progression_base_prob=self.config.attack_progression_prob,
             lateral_movement_base_prob=self.config.lateral_spread_base_prob,
             natural_severity_growth=self.config.natural_severity_growth,
-        ))
+        )
+        self._attack_overrides: dict = {}
+        self._attack_engine = AttackEngine(self._attack_config)
 
         # Detection system (Phase 3)
         self._detection_system = DetectionSystem(DetectionConfig(
@@ -142,6 +144,18 @@ class AdaptiveCyberDefenseEnv:
         # Episode history for adaptive decision support (Phase 6)
         self._action_history: List[Dict[str, Any]] = []
         self._lateral_events: List[LateralMovementEvent] = []
+
+    # -----------------------------------------------------------------------
+    # Adaptive attacker hook
+    # -----------------------------------------------------------------------
+
+    def set_attack_overrides(self, overrides: dict) -> None:
+        """
+        Apply adaptive attacker config overrides to the attack engine.
+        Call before reset() to take effect for the next episode.
+        """
+        self._attack_overrides = overrides or {}
+        self._attack_engine = AttackEngine(self._attack_config, overrides=self._attack_overrides)
 
     # -----------------------------------------------------------------------
     # OpenEnv API

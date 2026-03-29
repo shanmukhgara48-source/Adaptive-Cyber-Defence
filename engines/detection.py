@@ -353,6 +353,9 @@ class DetectionSystem:
             threat.steps_active * self.config.time_active_detection_bonus_rate,
         )
 
+        # Adaptive attacker strategy evasion bonus (APT/zero-day/insider)
+        strategy_evasion = getattr(threat, "detection_evasion", 0.0)
+
         prob = (
             self.config.base_detection_prob
             + stage_bonus
@@ -361,6 +364,7 @@ class DetectionSystem:
             + time_bonus
             - evasion
             - load_penalty
+            - strategy_evasion
         )
         return max(0.02, min(0.97, prob))   # never absolute certainty either way
 

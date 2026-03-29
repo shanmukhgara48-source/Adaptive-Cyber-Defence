@@ -520,8 +520,26 @@ def render_graph(state, interactive: bool = True) -> None:
 
 def _init(task_name: str = "Easy", seed: int = 42) -> None:
     """Fully reset session state and build a fresh environment."""
+    # ── Adaptive attacker: end the previous episode and start a new one ───────
+    _attacker = st.session_state.get("adaptive_attacker")
+    if _attacker is not None and st.session_state.get("step_count", 0) > 0:
+        _prev_score = st.session_state.get("total_reward", 0.0)
+        _prev_done  = st.session_state.get("done", False)
+        _attacker.on_episode_end(
+            defender_won=_prev_done,
+            score=min(1.0, max(0.0, _prev_score / max(1, st.session_state.get("step_count", 1)))),
+        )
+
     task = TASK_MAP[task_name]()
     env  = task.build_env()
+
+    # Apply attack overrides from attacker if available
+    if _attacker is not None:
+        _new_plan = _attacker.on_episode_start()
+        st.session_state.attack_plan = _new_plan
+        _cfg = _attacker.get_attack_config_override(_new_plan["attack_strategy"])
+        env.set_attack_overrides(_cfg)
+
     state = env.reset(seed=seed)
 
     st.session_state.update(
@@ -555,6 +573,16 @@ def _do_step(action: ActionInput) -> None:
     """Execute one env step and update session state."""
     env = st.session_state.env
     state, reward, done, info = env.step(action)
+
+    # Feed defender action to adaptive attacker
+    _attacker = st.session_state.get("adaptive_attacker")
+    _plan     = st.session_state.get("attack_plan", {})
+    if _attacker is not None:
+        _attacker.observe_defender_action(
+            action.action.name,
+            _plan.get("attack_strategy", "UNKNOWN"),
+        )
+        st.session_state.attack_plan = _plan   # keep in sync
 
     st.session_state.state        = state
     st.session_state.done         = done
@@ -697,8 +725,17 @@ with st.sidebar:
 state = st.session_state.state
 info  = st.session_state.last_info
 
+# ── Adaptive attacker (singleton per session) ─────────────────────────────────
+if "adaptive_attacker" not in st.session_state:
+    from adaptive_cyber_defense.engines.adaptive_attacker import AdaptiveAttacker
+    st.session_state.adaptive_attacker = AdaptiveAttacker(seed=42)
+if "attack_plan" not in st.session_state:
+    st.session_state.attack_plan = st.session_state.adaptive_attacker.on_episode_start()
+
 # ── tabs ─────────────────────────────────────────────────────────────────────
-tab_soc, tab_topo, tab_train = st.tabs(["🛡️ SOC Dashboard", "🌐 Network Topology", "📈 Training"])
+tab_soc, tab_topo, tab_train, tab_redteam = st.tabs([
+    "🛡️ SOC Dashboard", "🌐 Network Topology", "📈 Training", "🔴 Red Team Intel"
+])
 
 # ============================================================================
 # TAB 2 — Network Topology
@@ -943,6 +980,91 @@ with tab_train:
             "ql_table.json not found.  "
             "Run the Phase 1–3 training scripts to generate it, then reload this page."
         )
+
+# ============================================================================
+# TAB 4 — Red Team Intelligence
+# ============================================================================
+with tab_redteam:
+    st.markdown("## 🔴 Red Team Intelligence")
+    st.caption(
+        "The adaptive attacker observes your defense strategy across episodes "
+        "and switches attack type to exploit your most predictable weakness."
+    )
+
+    _att   = st.session_state.get("adaptive_attacker")
+    _plan  = st.session_state.get("attack_plan", {})
+
+    _STRAT_COLORS = {
+        "PHISHING":       "🔵",
+        "APT":            "🟣",
+        "RANSOMWARE":     "🔴",
+        "INSIDER_THREAT": "🟠",
+        "SUPPLY_CHAIN":   "🟡",
+        "ZERO_DAY":       "⚫",
+    }
+
+    with st.expander("Current Episode Attack Plan", expanded=True):
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _strat = _plan.get("attack_strategy", "PHISHING")
+            _icon  = _STRAT_COLORS.get(_strat, "")
+            st.metric("Attack Strategy", f"{_icon} {_strat}")
+            st.caption(_plan.get("reasoning", "Probing defender…"))
+        with _c2:
+            _dp = _plan.get("defender_profile", {})
+            st.metric("Defender Profile Detected",
+                      _dp.get("strategy_label", "UNKNOWN"))
+            if _dp:
+                st.progress(
+                    min(1.0, _dp.get("isolation_rate", 0.0)),
+                    text=f"Isolation: {_dp.get('isolation_rate', 0):.0%}",
+                )
+                st.progress(
+                    min(1.0, _dp.get("block_rate", 0.0)),
+                    text=f"Block:     {_dp.get('block_rate', 0):.0%}",
+                )
+                st.progress(
+                    min(1.0, _dp.get("scan_rate", 0.0)),
+                    text=f"Scan:      {_dp.get('scan_rate', 0):.0%}",
+                )
+                st.progress(
+                    min(1.0, _dp.get("patch_rate", 0.0)),
+                    text=f"Patch:     {_dp.get('patch_rate', 0):.0%}",
+                )
+
+    if _att is not None and _att.strategy_history:
+        st.markdown("### Strategy History")
+        _hist_data = []
+        for _entry in _att.strategy_history[-10:]:
+            _hist_data.append({
+                "Episode":  _entry["episode"],
+                "Strategy": _entry["attack_strategy"],
+                "Defender": _entry["defender_profile"]["strategy_label"],
+                "Reasoning": _entry["reasoning"][:70] + "…",
+            })
+        st.dataframe(_hist_data, use_container_width=True)
+
+        st.markdown("### Live Defender Profile")
+        _p = _att.defender_profile
+        _counts = dict(_p.action_counts)
+        if _counts:
+            import matplotlib.pyplot as plt
+            _fig_rt, _ax_rt = plt.subplots(figsize=(5, 2.5))
+            _ax_rt.barh(list(_counts.keys()), list(_counts.values()),
+                        color="#e74c3c")
+            _ax_rt.set_xlabel("Times used")
+            _ax_rt.set_title("Defender Action Counts (observed by red team)")
+            _ax_rt.tick_params(labelsize=8)
+            _fig_rt.tight_layout()
+            st.pyplot(_fig_rt)
+            plt.close(_fig_rt)
+        else:
+            st.info("No actions observed yet — take some steps in the SOC Dashboard.")
+
+        if _att.adaptation_log:
+            with st.expander("Adaptation Log"):
+                for _line in _att.adaptation_log[-10:]:
+                    st.text(_line)
 
 # ============================================================================
 # TAB 1 — SOC Dashboard (the original content, wrapped in tab_soc)
