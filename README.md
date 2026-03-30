@@ -120,3 +120,8 @@ Every threat tracks its current MITRE ATT&CK technique:
 | Malware Install | T1204 | Execution |
 | Lateral Spread | T1021 | Lateral Movement |
 | Exfiltration | T1041 | Exfiltration |
+
+## Repository
+
+- **GitHub:** https://github.com/shanmukhgara48-source/Adaptive-Cyber-Defence
+- **HF Space:** https://huggingface.co/spaces/shanmukhgara/adaptive-cyber-defense
