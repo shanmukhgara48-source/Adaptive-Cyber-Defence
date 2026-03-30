@@ -31,6 +31,8 @@ def root():
 
 @app.get("/reset")
 @app.get("/reset/")
+@app.post("/reset")
+@app.post("/reset/")
 def reset():
     state["current_attack"] = random.choice(ATTACKS)
     state["system_health"] = 100
@@ -48,6 +50,8 @@ def reset():
 
 @app.get("/state")
 @app.get("/state/")
+@app.post("/state")
+@app.post("/state/")
 def get_state():
     return {
         "current_attack": state["current_attack"],
