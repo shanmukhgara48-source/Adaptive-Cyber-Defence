@@ -1,0 +1,8 @@
+[project]
+name = "adaptive-cyber-defense"
+version = "0.1.0"
+description = "AI Cyber Defense OpenEnv Environment"
+dependencies = []
+
+[tool.openenv]
+entrypoint = "app:app"
