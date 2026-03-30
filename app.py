@@ -20,10 +20,6 @@ state = {
 }
 
 
-def _new_attack():
-    return random.choice(ATTACKS)
-
-
 class StepRequest(BaseModel):
     action: str
 
@@ -35,7 +31,7 @@ def root():
 
 @app.get("/reset")
 def reset():
-    state["current_attack"] = _new_attack()
+    state["current_attack"] = random.choice(ATTACKS)
     state["system_health"]  = 100
     state["score"]          = 0
     state["step"]           = 0
@@ -68,7 +64,7 @@ def step(req: StepRequest):
 
     action  = req.action.strip().lower()
     attack  = state["current_attack"]
-    correct = CORRECT_ACTION[attack]
+    correct = CORRECT_ACTION.get(attack, "")
 
     if action == correct:
         reward = 1.0
@@ -85,7 +81,7 @@ def step(req: StepRequest):
     if state["system_health"] <= 0 or state["step"] >= 50:
         state["done"] = True
     else:
-        state["current_attack"] = _new_attack()
+        state["current_attack"] = random.choice(ATTACKS)
 
     return {
         "action":         action,
