@@ -1,4 +1,13 @@
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
 *.png
-*.pyc
+training/ql_table.json
+training/phase*.json
+training/training_history.json
+.env
+*.log
+.DS_Store
+validation_results.json
+README.exit
