@@ -2,7 +2,15 @@
 name = "adaptive-cyber-defense"
 version = "0.1.0"
 description = "AI Cyber Defense OpenEnv Environment"
-dependencies = []
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "openenv-core>=0.2.0"
+]
+
+[project.scripts]
+server = "server.app:app"
 
 [tool.openenv]
-entrypoint = "app:app"
+entrypoint = "server.app:app"
