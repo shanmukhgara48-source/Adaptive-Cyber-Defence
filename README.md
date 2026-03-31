@@ -1,5 +1,5 @@
 ---
-title: Adaptive Cyber Defense Simulator
+title: Adaptive Cyber Defense Environment
 emoji: 🛡️
 colorFrom: red
 colorTo: purple
@@ -11,117 +11,152 @@ tags:
   - cybersecurity
 ---
 
-# Adaptive Cyber Defense Simulator
+# Adaptive Cyber Defense Environment (OpenEnv)
 
-An OpenEnv-compliant reinforcement learning environment simulating a Security Operations Center (SOC) defending an enterprise network against multi-stage cyber attacks.
+An autonomous SOC simulation environment built on **FastAPI** and packaged as an **OpenEnv**-compatible API. An AI agent defends a corporate network against multi-stage cyber attacks under **partial observability** — threats are hidden until the agent actively scans nodes to discover them.
+
+---
 
 ## Overview
 
-Threats progress through a kill-chain: **Phishing → Credential Access → Malware Install → Lateral Spread → Exfiltration**. The agent must detect, prioritize, and contain threats using a limited resource budget.
+The environment simulates a 5-node corporate network under continuous attack. Three threat types (phishing, malware, DDoS) spawn on random nodes and age over time — escalating from `initial` to `lateral_movement` if not contained. The agent must scan to reveal hidden threats, then apply the correct mitigation before system health reaches zero.
 
-The environment features an **adaptive red-team attacker** that profiles the defender's strategy across episodes and switches attack type to counter it (APT, Ransomware, Insider Threat, Supply Chain, Zero-Day).
+---
 
-## Observation Space
+## Features
 
-Each `reset()` and `step()` returns a dict observation with:
+- **FastAPI backend** — lightweight, production-grade REST API
+- **Partial observability** — threats are hidden; `scan_node_X` actions reveal them
+- **SCAN-based discovery** — 5 scannable nodes, coverage tracked per episode
+- **Deterministic reward system** — clamped to `[-2.0, 2.0]`, no NaN/Inf
+- **Threat lifecycle** — threats age, escalate, and cause damage if ignored
+- **MITRE ATT&CK mapping** — each threat type maps to a real ATT&CK technique
+- **Robust error handling** — never crashes; always returns complete JSON
+- **Stress-tested** — 400+ adversarial test cases across 8 categories
+- **Auto-healing state** — detects and recovers from state corruption automatically
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `active_threats` | list | Each threat's stage, severity, MITRE technique, target node |
-| `network_state` | dict | Per-node health, compromise status, patch level, criticality |
-| `resources` | dict | Remaining scan capacity and response slots |
-| `step` | int | Current time step |
-| `score` | float | Cumulative reward so far |
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Health check |
+| `GET/POST` | `/reset` | Start a new episode |
+| `GET/POST` | `/state` | Get current observation |
+| `POST` | `/step` | Submit an action |
+
+### Observation Schema
+
+```json
+{
+  "visible_threats":   [{"type": "malware", "node": "node_2", "stage": "initial", "age": 2}],
+  "hidden_node_count": 3,
+  "scan_coverage":     0.4,
+  "system_health":     85,
+  "score":             0.52,
+  "step":              7,
+  "done":              false
+}
+```
+
+### Step Response Schema
+
+```json
+{
+  "action":            "block_ip",
+  "reward":            1.0,
+  "visible_threats":   [],
+  "hidden_node_count": 3,
+  "scan_coverage":     0.4,
+  "system_health":     85,
+  "score":             1.5,
+  "step":              8,
+  "done":              false
+}
+```
+
+---
 
 ## Action Space
 
-11 discrete actions: `BLOCK_IP`, `ISOLATE_NODE`, `PATCH_SYSTEM`, `RUN_DEEP_SCAN`, `SCAN`, `PATCH_VULNERABILITY`, `DECRYPT`, `REVOKE_CREDENTIALS`, `QUARANTINE_SERVICE`, `RESTORE_NODE`, `IGNORE`
+| Action | Effect |
+|--------|--------|
+| `block_ip` | Neutralises phishing threats |
+| `isolate_machine` | Neutralises malware threats |
+| `patch` | Neutralises DDoS threats |
+| `ignore` | −10 health, −1.0 reward |
+| `scan_node_1` … `scan_node_5` | Reveals hidden threats on that node |
 
-## Difficulty Tiers
+---
 
-| Tier   | Threats | Max Steps | Progression Prob | Passing Score |
-|--------|---------|-----------|-----------------|---------------|
-| Easy   | 1       | 50        | 0.15            | 0.45          |
-| Medium | 2       | 40        | 0.25            | 0.45          |
-| Hard   | 3       | 30        | 0.40            | 0.45          |
+## MITRE ATT&CK Mapping
 
-## Quick Start
+| Threat Type | Technique | Tactic |
+|-------------|-----------|--------|
+| phishing | T1566 | Initial Access |
+| malware | T1204 | Execution |
+| ddos | T1498 | Impact |
+
+---
+
+## Example Usage
+
+```bash
+# Start a new episode
+curl -X POST http://localhost:8000/reset
+
+# Scan a node to reveal hidden threats
+curl -X POST http://localhost:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{"action": "scan_node_1"}'
+
+# Apply mitigation after threat is revealed
+curl -X POST http://localhost:8000/step \
+  -H "Content-Type: application/json" \
+  -d '{"action": "block_ip"}'
+
+# Get current state
+curl http://localhost:8000/state
+```
+
+---
+
+## Deployment
+
+### Local
 
 ```bash
 pip install -r requirements.txt
-
-# Run a single episode (easy, baseline agent)
-python adaptive_cyber_defense/run.py
-
-# Hard task, 5 episodes with adaptive red team
-python adaptive_cyber_defense/run.py --task hard --episodes 5 --verbose
-
-# JSON output for evaluation
-python adaptive_cyber_defense/run.py --task medium --agent baseline --seed 0 --json
-
-# Streamlit demo UI
-streamlit run adaptive_cyber_defense/ui.py
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-## LLM Inference
-
-`inference.py` runs an OpenAI-compatible LLM agent across all three task difficulties:
+### Docker
 
 ```bash
-export API_BASE_URL=https://api.openai.com/v1
-export MODEL_NAME=gpt-4o-mini
-export HF_TOKEN=your_token_here
-python adaptive_cyber_defense/inference.py
+docker build -t cyber-defense .
+docker run -p 7860:7860 cyber-defense
 ```
 
-Falls back to a rule-based heuristic when the LLM is unavailable.
+### Hugging Face Spaces
 
-## OpenEnv API
+Deploy directly — the `Dockerfile` exposes port `7860` as required by Spaces.
 
-```python
-from adaptive_cyber_defense.environment import CyberDefenseEnv
+---
 
-env = CyberDefenseEnv(task="easy", seed=42)
-obs = env.reset()           # dict observation
+## Evaluation Readiness
 
-obs, reward, done, info = env.step("SCAN")  # reward ∈ [-1.0, 1.0]
-state = env.state()         # full state dict
-```
+- Passes OpenEnv validator (`openenv.yaml` included)
+- Handles all adversarial inputs without crashing (SQL injection, XSS, unicode, null bytes, oversized payloads)
+- Always returns complete observation structure on every call
+- Stable under concurrent load and 200+ rapid sequential requests
 
-## Baseline Scores
+---
 
-| Task   | Baseline Agent | LLM Agent (fallback) |
-|--------|---------------|----------------------|
-| Easy   | 0.87          | 0.85                 |
-| Medium | 0.83          | 0.81                 |
-| Hard   | 0.85          | 0.69                 |
+## Tech Stack
 
-## Architecture
-
-- `environment.py` — OpenEnv-compliant wrapper (`CyberDefenseEnv`)
-- `env.py` — Core simulation (`AdaptiveCyberDefenseEnv`)
-- `engines/attack.py` — Kill-chain progression engine
-- `engines/adaptive_attacker.py` — Red-team attacker with defender profiling
-- `engines/detection.py` — Probabilistic SOC detection system
-- `engines/decision.py` — AI recommendation engine
-- `models/` — State, action, network, MITRE ATT&CK models
-- `inference.py` — LLM agent runner (OpenAI-compatible)
-- `ui.py` — Streamlit SOC dashboard
-- `run.py` — CLI episode runner
-
-## MITRE ATT&CK Integration
-
-Every threat tracks its current MITRE ATT&CK technique:
-
-| Kill-Chain Stage | Technique ID | Tactic |
-|-----------------|-------------|--------|
-| Phishing | T1566 | Initial Access |
-| Credential Access | T1078 | Credential Access |
-| Malware Install | T1204 | Execution |
-| Lateral Spread | T1021 | Lateral Movement |
-| Exfiltration | T1041 | Exfiltration |
-
-## Repository
-
-- **GitHub:** https://github.com/shanmukhgara48-source/Adaptive-Cyber-Defence
-- **HF Space:** https://huggingface.co/spaces/shanmukhgara/adaptive-cyber-defense
+- **Python 3.10+**
+- **FastAPI** + **Pydantic v2**
+- **Uvicorn**
+- **Docker**
+- **OpenEnv**
