@@ -32,16 +32,20 @@ tasks:
 
 observation_space:
   type: dict
+  description: "This environment has partial observability. Threats may be hidden and require SCAN actions to discover."
   fields:
-    - name: active_threats
+    - name: visible_threats
       type: list
-      description: "List of active threats with stage, severity, target_node"
-    - name: network_state
-      type: dict
-      description: "Per-node health, status, and criticality flags"
-    - name: resources
-      type: dict
-      description: "Remaining scan capacity and response slots"
+      description: "List of currently visible threats; hidden threats are not returned"
+    - name: hidden_node_count
+      type: int
+      description: "Number of nodes not yet scanned"
+    - name: scan_coverage
+      type: float
+      description: "Fraction of nodes that have been scanned (0.0 to 1.0)"
+    - name: system_health
+      type: int
+      description: "Current system health (0–100)"
     - name: step
       type: int
       description: "Current time step"
