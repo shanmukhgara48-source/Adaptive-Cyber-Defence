@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
+from models import Observation, Action, Reward
 
 # ─── DEBUG ────────────────────────────────────────────────────────────────────
 DEBUG = True
@@ -291,21 +292,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 
 
 # ─── INPUT MODEL ──────────────────────────────────────────────────────────────
-class StepRequest(BaseModel):
-    action: str
-
-    @field_validator("action", mode="before")
-    @classmethod
-    def coerce_action(cls, v):
-        if not isinstance(v, str):
-            if DEBUG:
-                log.debug(f"Non-string action coerced: {type(v).__name__}={v!r}")
-            v = str(v)
-        if len(v) > MAX_ACTION_LEN:
-            if DEBUG:
-                log.debug(f"Oversized action truncated: len={len(v)}")
-            v = v[:MAX_ACTION_LEN]
-        return v
+# Action (request body) and Observation/Reward (response) are imported from models.
 
 
 # ─── ENDPOINTS ────────────────────────────────────────────────────────────────
@@ -324,26 +311,26 @@ def get_history():
     return history
 
 
-@app.get("/reset")
-@app.get("/reset/")
-@app.post("/reset")
-@app.post("/reset/")
+@app.get("/reset", response_model=Observation)
+@app.get("/reset/", response_model=Observation)
+@app.post("/reset", response_model=Observation)
+@app.post("/reset/", response_model=Observation)
 def reset():
     _reset_state()
-    return _obs()
+    return Observation(**_obs())
 
 
-@app.get("/state")
-@app.get("/state/")
-@app.post("/state")
-@app.post("/state/")
+@app.get("/state", response_model=Observation)
+@app.get("/state/", response_model=Observation)
+@app.post("/state", response_model=Observation)
+@app.post("/state/", response_model=Observation)
 def get_state():
     _validate_state()
-    return _obs()
+    return Observation(**_obs())
 
 
 @app.post("/step")
-def step(req: StepRequest):
+def step(req: Action):
     try:
         _validate_state()
 
