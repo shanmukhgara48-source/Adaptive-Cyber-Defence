@@ -8,15 +8,15 @@ Internal architecture and design notes for contributors.
 
 ```
 adaptive_cyber_defense/
-├── app.py                  # Primary hardened API (submit this)
-├── server/app.py           # Legacy simple API (OpenEnv entrypoint via pyproject.toml)
+├── app.py                  # Primary hardened API 
+├── server/app.py           # Legacy simple API 
 ├── Dockerfile              # Docker build (port 7860)
 ├── requirements.txt        # Runtime dependencies
 ├── pyproject.toml          # OpenEnv metadata + entrypoint declaration
 ├── openenv.yaml            # OpenEnv task definitions + observation/action schema
 ├── test_runner.py          # Adversarial stress test suite (400+ cases)
-├── environment.py          # OpenEnv-compliant Python wrapper (CyberDefenseEnv)
-├── env.py                  # Core simulation engine (AdaptiveCyberDefenseEnv)
+├── environment.py          # OpenEnv-compliant Python wrapper 
+├── env.py                  # Core simulation engine 
 ├── engines/
 │   ├── attack.py           # Kill-chain progression
 │   ├── adaptive_attacker.py # Red-team profiling
@@ -37,7 +37,7 @@ adaptive_cyber_defense/
 │   ├── easy.py / medium.py / hard.py  # Task configs
 │   └── base.py             # Base task class
 ├── training/               # Training scripts + result plots
-├── inference.py            # LLM agent runner (OpenAI-compatible)
+├── inference.py            # LLM agent runner 
 ├── run.py                  # CLI episode runner
 └── ui.py                   # Streamlit SOC dashboard
 ```
