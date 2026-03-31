@@ -10,7 +10,7 @@ from openai import OpenAI
 BASE_URL     = os.getenv("BASE_URL", "http://localhost:8000")
 API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME   = os.getenv("MODEL_NAME")
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_KEY      = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
 if not API_BASE_URL:
     raise ValueError("Missing required environment variable: API_BASE_URL")
