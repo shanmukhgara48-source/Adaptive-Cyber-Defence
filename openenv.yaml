@@ -1,77 +1,134 @@
 name: adaptive-cyber-defense
-version: "1.0.0"
-description: "Autonomous SOC assistant defending a corporate network against multi-stage cyber attacks"
+version: "2.0.0"
+description: "Autonomous SOC assistant defending a 5-node corporate network against multi-stage cyber attacks under partial observability"
 author: "shanmukhgara"
 tags:
   - cybersecurity
   - reinforcement-learning
   - multi-agent
   - openenv
+  - mitre-attack
 
 tasks:
   - id: easy
     name: Easy Defense
-    description: "Defend against 2 simultaneous threats on a clean network"
+    description: "Detect and block a single phishing attack before it harvests credentials"
     difficulty: easy
     passing_score: 0.45
     max_steps: 50
 
   - id: medium
     name: Medium Defense
-    description: "Defend against 3-4 threats with lateral movement enabled"
+    description: "Stop malware and ransomware spread across 3 nodes before lateral movement triggers"
     difficulty: medium
     passing_score: 0.45
     max_steps: 40
 
   - id: hard
     name: Hard Defense
-    description: "Defend against 5+ threats with all attack types active"
+    description: "Handle multi-stage attacks across all 5 nodes simultaneously with limited scan budget"
     difficulty: hard
     passing_score: 0.45
     max_steps: 30
 
+  - id: nightmare
+    name: Nightmare Defense
+    description: "Defend against 5 hidden threats under full partial observability with no prior scan coverage"
+    difficulty: nightmare
+    passing_score: 0.45
+    max_steps: 25
+
 observation_space:
   type: dict
-  description: "This environment has partial observability. Threats may be hidden and require SCAN actions to discover."
+  description: >
+    Partially observable environment. Threats are hidden on network nodes and must be
+    discovered via SCAN actions or by waiting for natural aging (age >= 5) or stage
+    escalation (lateral_movement). The agent sees only scanned or escalated threats.
   fields:
     - name: visible_threats
       type: list
-      description: "List of currently visible threats; hidden threats are not returned"
+      description: "Threats currently visible to the agent. Each entry includes type, node, stage, age, and MITRE ATT&CK technique ID. Hidden threats are not included."
     - name: hidden_node_count
       type: int
-      description: "Number of nodes not yet scanned"
+      description: "Number of nodes not yet scanned by the agent (0–5)"
     - name: scan_coverage
       type: float
-      description: "Fraction of nodes that have been scanned (0.0 to 1.0)"
+      description: "Fraction of nodes that have been scanned (0.0 = none, 1.0 = all)"
     - name: system_health
       type: int
-      description: "Current system health (0–100)"
-    - name: step
-      type: int
-      description: "Current time step"
+      description: "Current system health (0–100). Drops on wrong actions, ignore, or uncontained threats"
     - name: score
       type: float
-      description: "Cumulative reward so far"
+      description: "Cumulative reward this episode"
+    - name: step
+      type: int
+      description: "Current time step within the episode"
+    - name: done
+      type: bool
+      description: "True when the episode is over (health <= 0 or max steps reached)"
 
 action_space:
   type: discrete
+  description: >
+    9 discrete actions. Defense actions only work against visible threats.
+    Use SCAN actions to reveal hidden threats before applying mitigations.
+    MITRE ATT&CK guides the correct response: T1566→block_ip, T1204/T1486→isolate_machine,
+    T1499→patch, T1021→block_ip.
   actions:
-    - ISOLATE_NODE
-    - BLOCK_IP
-    - SCAN
-    - PATCH_VULNERABILITY
-    - RESTORE_NODE
-    - BLOCK_LATERAL
-    - REVOKE_CREDENTIALS
-    - DECRYPT
-    - QUARANTINE_SERVICE
-    - RUN_DEEP_SCAN
-    - DO_NOTHING
+    - name: block_ip
+      description: "Neutralises phishing (T1566) and lateral movement (T1021) threats"
+    - name: isolate_machine
+      description: "Neutralises malware (T1204) and ransomware (T1486) threats"
+    - name: patch
+      description: "Neutralises DDoS (T1499) threats"
+    - name: ignore
+      description: "No mitigation applied. Health -10, reward -1.5"
+    - name: scan_node_1
+      description: "Scan node_1 to reveal any hidden threats on that node"
+    - name: scan_node_2
+      description: "Scan node_2 to reveal any hidden threats on that node"
+    - name: scan_node_3
+      description: "Scan node_3 to reveal any hidden threats on that node"
+    - name: scan_node_4
+      description: "Scan node_4 to reveal any hidden threats on that node"
+    - name: scan_node_5
+      description: "Scan node_5 to reveal any hidden threats on that node"
 
 reward:
-  range: [0.0, 1.0]
-  description: "Weighted combination of containment speed, critical node health, and resource efficiency"
+  range: [-2.0, 2.0]
+  description: >
+    Reward is deterministic and clamped to [-2.0, 2.0].
+    Correct mitigation: 1.0 + (system_health / 100) + 0.1 early-neutralization bonus (threat age < 3).
+    Wrong mitigation: -0.5 - health penalty factor.
+    Ignore: -1.5.
+    Scan reveals threat: +0.02.
+    Scan finds nothing: -0.01.
+
+mitre_attack:
+  version: "14.0"
+  techniques:
+    - id: T1566
+      name: Phishing
+      tactic: Initial Access
+      mitigation: block_ip
+    - id: T1204
+      name: User Execution (Malware)
+      tactic: Execution
+      mitigation: isolate_machine
+    - id: T1499
+      name: Endpoint Denial of Service
+      tactic: Impact
+      mitigation: patch
+    - id: T1486
+      name: Data Encrypted for Impact (Ransomware)
+      tactic: Impact
+      mitigation: isolate_machine
+    - id: T1021
+      name: Remote Services (Lateral Movement)
+      tactic: Lateral Movement
+      mitigation: block_ip
 
 docker:
   port: 7860
-  health_check: "/_stcore/health"
+  health_check: "/state"
+  entrypoint: "uvicorn app:app --host 0.0.0.0 --port 7860"

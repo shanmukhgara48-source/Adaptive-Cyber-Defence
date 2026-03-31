@@ -12,12 +12,52 @@ logging.basicConfig(level=logging.DEBUG if DEBUG else logging.WARNING)
 log = logging.getLogger("cyber_defense")
 
 # ─── CONSTANTS ────────────────────────────────────────────────────────────────
-ATTACKS = ["phishing", "malware", "ddos"]
+ATTACKS = ["phishing", "malware", "ddos", "ransomware", "lateral_movement"]
+
 CORRECT_ACTION = {
     "phishing": "block_ip",
     "malware": "isolate_machine",
     "ddos": "patch",
+    "ransomware": "isolate_machine",
+    "lateral_movement": "block_ip",
 }
+
+MITRE_MAP = {
+    "phishing": "T1566",
+    "malware": "T1204",
+    "ddos": "T1499",
+    "ransomware": "T1486",
+    "lateral_movement": "T1021",
+}
+
+EXPLAIN = {
+    "phishing": {
+        "correct": "Phishing attack detected (T1566). Blocking the source IP prevents credential theft and halts the initial access vector.",
+        "wrong": "Phishing requires blocking the source IP. Other mitigations do not stop credential harvesting.",
+        "ignore": "Ignoring phishing allows the attacker to harvest credentials — severe health impact.",
+    },
+    "malware": {
+        "correct": "Malware execution detected (T1204). Isolating the machine cuts off C2 communication and stops lateral spread.",
+        "wrong": "Malware requires machine isolation. Blocking IPs or patching alone does not stop active execution.",
+        "ignore": "Ignoring active malware allows it to spread to adjacent nodes — critical health loss.",
+    },
+    "ddos": {
+        "correct": "DDoS attack detected (T1499). Patching the exposed service mitigates the volumetric impact.",
+        "wrong": "DDoS requires patching the target service. Isolation or IP blocking does not absorb volumetric traffic.",
+        "ignore": "Ignoring a DDoS degrades service availability rapidly.",
+    },
+    "ransomware": {
+        "correct": "Ransomware detected (T1486). Isolating the machine prevents encryption from spreading to network shares.",
+        "wrong": "Ransomware requires machine isolation to stop file encryption propagation.",
+        "ignore": "Ignoring ransomware allows full disk encryption — catastrophic health loss.",
+    },
+    "lateral_movement": {
+        "correct": "Lateral movement detected (T1021). Blocking the attacker IP stops traversal to new hosts.",
+        "wrong": "Lateral movement requires IP blocking to cut the attacker's pivot path.",
+        "ignore": "Ignoring lateral movement allows the attacker to compromise additional nodes.",
+    },
+}
+
 TOTAL_NODES = 5
 NODES = [f"node_{i}" for i in range(1, TOTAL_NODES + 1)]
 
@@ -30,8 +70,15 @@ MAX_ACTION_LEN = 64
 MAX_REWARD = 2.0
 MIN_REWARD = -2.0
 
+TASKS = [
+    {"id": 1, "difficulty": "easy",      "goal": "Detect and block a phishing attack before it harvests credentials"},
+    {"id": 2, "difficulty": "medium",    "goal": "Stop malware spread before it reaches lateral movement stage"},
+    {"id": 3, "difficulty": "hard",      "goal": "Handle multi-stage attacks across multiple nodes simultaneously"},
+    {"id": 4, "difficulty": "nightmare", "goal": "Defend against multiple hidden threats under limited visibility and no scan budget"},
+]
+
 # ─── APP ──────────────────────────────────────────────────────────────────────
-app = FastAPI()
+app = FastAPI(title="Adaptive Cyber Defense", version="2.0.0")
 
 
 # ─── STATE ────────────────────────────────────────────────────────────────────
@@ -44,14 +91,32 @@ def _make_threats():
             "age": 0,
             "stage": "initial",
             "contained": False,
+            "mitre_id": MITRE_MAP.get(random.choice(ATTACKS), "T0000"),
         }
         for _ in range(3)
     ]
 
 
+def _make_threats_fixed():
+    """Make threats with correct mitre_id per type (called after type is set)."""
+    threats = []
+    for _ in range(3):
+        t_type = random.choice(ATTACKS)
+        threats.append({
+            "type": t_type,
+            "node": random.choice(NODES),
+            "visible": False,
+            "age": 0,
+            "stage": "initial",
+            "contained": False,
+            "mitre_id": MITRE_MAP[t_type],
+        })
+    return threats
+
+
 def _fresh_state():
     return {
-        "threats": _make_threats(),
+        "threats": _make_threats_fixed(),
         "scanned_nodes": set(),
         "system_health": 100,
         "score": 0.0,
@@ -61,11 +126,14 @@ def _fresh_state():
 
 
 state = _fresh_state()
+history = []
 
 
 def _reset_state():
+    global history
     fresh = _fresh_state()
     state.update(fresh)
+    history = []
 
 
 def _validate_state():
@@ -91,8 +159,11 @@ def _clamp_health():
 
 def _clamp_reward(r: float) -> float:
     if not math.isfinite(r):
-        return 0.0
-    return max(MIN_REWARD, min(MAX_REWARD, r))
+        return 0.5
+    # Normalized reward to [0,1] for OpenEnv compliance
+    normalized_reward = (float(r) + 2.0) / 4.0
+    normalized_reward = max(0.0, min(1.0, normalized_reward))
+    return normalized_reward
 
 
 def _clamp_score():
@@ -120,11 +191,17 @@ def _age_threats():
 
 
 def _visible_threats():
-    return [
-        {k: v for k, v in t.items() if k != "contained"}
-        for t in state["threats"]
-        if t["visible"] and not t.get("contained")
-    ]
+    out = []
+    for t in state["threats"]:
+        if t["visible"] and not t.get("contained"):
+            out.append({
+                "type": t["type"],
+                "node": t["node"],
+                "stage": t["stage"],
+                "age": t["age"],
+                "mitre_id": t.get("mitre_id", MITRE_MAP.get(t["type"], "T0000")),
+            })
+    return out
 
 
 def _obs():
@@ -140,8 +217,29 @@ def _obs():
     }
 
 
-def safe_response(obs, action, reward=0.0, error=None):
-    """Always returns a complete response with all required keys."""
+def _build_reason(action: str, matched: bool, threat_type: str | None, early: bool) -> tuple[str, float]:
+    """Return (reason_string, confidence)."""
+    if action.startswith("scan"):
+        return ("Scanning reveals hidden threats before they escalate. Essential under partial observability.", 0.85)
+
+    if threat_type is None:
+        return ("No visible threat to act on. Scanning unexplored nodes is recommended.", 0.60)
+
+    ex = EXPLAIN.get(threat_type, {})
+    if matched:
+        base_conf = 0.92
+        reason = ex.get("correct", f"Correct mitigation for {threat_type} ({MITRE_MAP.get(threat_type, '')}).")
+        if early:
+            reason += " Early neutralization bonus applied."
+            base_conf = min(1.0, base_conf + 0.05)
+        return (reason, base_conf)
+    elif action == "ignore":
+        return (ex.get("ignore", f"Ignoring {threat_type} allows escalation."), 0.20)
+    else:
+        return (ex.get("wrong", f"Wrong mitigation for {threat_type}. Check MITRE technique {MITRE_MAP.get(threat_type, '')}."), 0.35)
+
+
+def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None):
     resp = {
         "action": action,
         "reward": round(float(reward), 3),
@@ -152,6 +250,8 @@ def safe_response(obs, action, reward=0.0, error=None):
         "score": obs.get("score", 0.0),
         "step": obs.get("step", 0),
         "done": obs.get("done", False),
+        "reason": reason,
+        "confidence": round(float(confidence), 2),
     }
     if error is not None:
         resp["error"] = error
@@ -167,7 +267,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     obs = _obs()
     return JSONResponse(
         status_code=200,
-        content=safe_response(obs, action="", reward=-0.5, error="invalid action"),
+        content=safe_response(obs, action="", reward=-0.5,
+                               reason="Invalid input received. Action rejected.",
+                               confidence=0.0, error="invalid action"),
     )
 
 
@@ -182,7 +284,9 @@ async def generic_exception_handler(request: Request, exc: Exception):
         obs = _obs()
     return JSONResponse(
         status_code=200,
-        content=safe_response(obs, action="", reward=-0.5, error="internal error"),
+        content=safe_response(obs, action="", reward=-0.5,
+                               reason="Internal error. State preserved.",
+                               confidence=0.0, error="internal error"),
     )
 
 
@@ -193,7 +297,6 @@ class StepRequest(BaseModel):
     @field_validator("action", mode="before")
     @classmethod
     def coerce_action(cls, v):
-        # Coerce to string rather than reject — truncate if too long
         if not isinstance(v, str):
             if DEBUG:
                 log.debug(f"Non-string action coerced: {type(v).__name__}={v!r}")
@@ -208,7 +311,17 @@ class StepRequest(BaseModel):
 # ─── ENDPOINTS ────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"message": "Cyber Defense API running"}
+    return {"message": "Adaptive Cyber Defense API v2.0 — OpenEnv compatible"}
+
+
+@app.get("/tasks")
+def get_tasks():
+    return TASKS
+
+
+@app.get("/history")
+def get_history():
+    return history
 
 
 @app.get("/reset")
@@ -237,14 +350,18 @@ def step(req: StepRequest):
         if state["done"]:
             if DEBUG:
                 log.debug("step() called after done=True")
-            return safe_response(_obs(), action="", reward=0.0, error="Episode over — call /reset")
+            return safe_response(
+                _obs(), action="", reward=0.0,
+                reason="Episode is over. Call /reset to start a new episode.",
+                confidence=1.0, error="Episode over — call /reset",
+            )
 
         raw_action = req.action.strip().lower()
 
-        # Whitelist enforcement — unknown actions get safe penalty, full obs returned
+        # Unknown action — safe fallback, full obs returned
         if raw_action not in VALID_ACTIONS:
             if DEBUG:
-                log.debug(f"Invalid action rejected by whitelist: {raw_action!r}")
+                log.debug(f"Unknown action: {raw_action!r}")
             reward = _clamp_reward(-0.5)
             state["system_health"] = max(0, state["system_health"] - 5)
             _age_threats()
@@ -255,40 +372,82 @@ def step(req: StepRequest):
             state["step"] += 1
             if state["system_health"] <= 0 or state["step"] >= 50:
                 state["done"] = True
-            return safe_response(_obs(), action=raw_action, reward=reward, error="invalid action")
+            obs = _obs()
+            history.append({"step": state["step"], "action": raw_action,
+                             "reward": round(reward, 3), "attack": None})
+            return safe_response(
+                obs, action=raw_action, reward=reward,
+                reason=f"'{raw_action}' is not a recognised action. Valid: block_ip, isolate_machine, patch, ignore, scan_node_1..5.",
+                confidence=0.0, error="invalid action",
+            )
 
         reward = 0.0
+        reason = ""
+        confidence = 0.5
+        matched = False
+        early_bonus = False
+        matched_threat_type = None
 
+        # ── SCAN ──
         if raw_action.startswith("scan"):
             parts = raw_action.replace("scan_", "scan ").split()
             node = parts[1] if len(parts) > 1 else ""
             if node in NODES:
                 state["scanned_nodes"].add(node)
-                revealed = False
+                revealed = any(
+                    t["node"] == node and not t["visible"] and not t.get("contained")
+                    for t in state["threats"]
+                )
                 for t in state["threats"]:
                     if t["node"] == node and not t["visible"] and not t.get("contained"):
                         t["visible"] = True
-                        revealed = True
                 reward = 0.02 if revealed else -0.01
+                reason, confidence = _build_reason(raw_action, False, None, False)
+                if revealed:
+                    reason = f"Scan of {node} revealed a hidden threat. Partial observability lifted for this node."
+                    confidence = 0.90
+                else:
+                    reason = f"Scan of {node} found no new threats. Coverage improved."
+                    confidence = 0.75
             else:
                 reward = -0.01
+                reason = f"'{node}' is not a valid node. Valid nodes: node_1 through node_5."
+                confidence = 0.10
+
+        # ── DEFENSE ──
         else:
-            matched = False
             for t in state["threats"]:
                 if t["visible"] and not t.get("contained"):
                     correct = CORRECT_ACTION.get(t["type"], "")
                     if raw_action == correct:
                         t["contained"] = True
-                        reward += 1.0
+                        matched_threat_type = t["type"]
                         matched = True
+                        # Reward: 1 + health bonus
+                        base = 1.0 + (state["system_health"] / 100.0)
+                        # Early neutralization bonus (age < 3)
+                        if t["age"] < 3:
+                            base += 0.1
+                            early_bonus = True
+                        reward += base
                         break
+
             if not matched:
+                # Find first visible uncontained threat type for context
+                for t in state["threats"]:
+                    if t["visible"] and not t.get("contained"):
+                        matched_threat_type = t["type"]
+                        break
+
                 if raw_action == "ignore":
-                    reward = -1.0
+                    reward = -1.5
                     state["system_health"] = max(0, state["system_health"] - 10)
                 else:
-                    reward = -0.5
+                    # Wrong action: -0.5 - health penalty component
+                    reward = -0.5 - (10 - min(state["system_health"], 10)) / 20.0
                     state["system_health"] = max(0, state["system_health"] - 5)
+
+            reason, confidence = _build_reason(raw_action, matched, matched_threat_type, early_bonus)
 
         reward = _clamp_reward(reward)
         _age_threats()
@@ -302,7 +461,17 @@ def step(req: StepRequest):
         if state["system_health"] <= 0 or state["step"] >= 50:
             state["done"] = True
 
-        return safe_response(_obs(), action=raw_action, reward=reward)
+        obs = _obs()
+
+        history.append({
+            "step": state["step"],
+            "action": raw_action,
+            "reward": round(reward, 3),
+            "attack": matched_threat_type,
+        })
+
+        return safe_response(obs, action=raw_action, reward=reward,
+                             reason=reason, confidence=confidence)
 
     except Exception as e:
         log.error(f"/step unhandled exception: {e}", exc_info=True)
@@ -312,7 +481,9 @@ def step(req: StepRequest):
         except Exception:
             _reset_state()
             obs = _obs()
-        return safe_response(obs, action="", reward=-0.5, error="invalid action")
+        return safe_response(obs, action="", reward=_clamp_reward(-0.5),
+                             reason="Unexpected error. State preserved.",
+                             confidence=0.0, error="invalid action")
 
 
 def main():

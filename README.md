@@ -160,3 +160,25 @@ Deploy directly — the `Dockerfile` exposes port `7860` as required by Spaces.
 - **Uvicorn**
 - **Docker**
 - **OpenEnv**
+
+---
+
+## Baseline Scores
+
+Scores produced by `inference.py` using `meta-llama/Meta-Llama-3-8B-Instruct` via the HuggingFace router.
+
+| Task   | Steps | Total Reward | Score | Status |
+|--------|-------|--------------|-------|--------|
+| easy   | 20    | 7.678        | 0.384 | done   |
+| medium | 18    | 6.076        | 0.304 | done   |
+| hard   | 18    | 6.759        | 0.338 | done   |
+
+To reproduce:
+
+```bash
+export API_BASE_URL=https://router.huggingface.co/v1
+export MODEL_NAME=meta-llama/Meta-Llama-3-8B-Instruct
+export HF_TOKEN=<your_token>
+export BASE_URL=http://localhost:8000
+python inference.py
+```
