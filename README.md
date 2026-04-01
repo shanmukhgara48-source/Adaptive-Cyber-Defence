@@ -102,20 +102,36 @@ The environment simulates a 5-node corporate network under continuous attack. Th
 
 ## Threat lifecycle
 
-Each threat progresses through a kill chain if not contained:
+Each threat follows a kill chain progression if not contained:
 
 ```
-INITIAL ACCESS → EXECUTION → LATERAL MOVEMENT → EXFILTRATION
-(T1566)        (T1204)        (T1021)           (game over)
-↓               ↓              ↓
-block_ip    isolate_machine    block_ip
+Initial Access → Execution → Lateral Movement → Exfiltration
+(T1566)         (T1204)      (T1021)            (critical damage)
+↓                ↓            ↓
+block_ip    isolate_machine   block_ip
 ```
 
-- Every step a threat ages by +1
-- At age >= 5 the threat becomes visible without scanning
-- At lateral_movement stage the threat spreads to adjacent nodes
-- At exfiltration stage critical asset health drops rapidly
-- Containing a threat early (age < 3) gives a +0.1 speed bonus
+### Stage descriptions
+
+| Stage | Description | Agent must act before... |
+|-------|-------------|--------------------------|
+| `initial` | Threat spawned, may be hidden | Age reaches 5 |
+| `reconnaissance` | Threat scanning network | Lateral movement triggers |
+| `lateral_movement` | Spreading to adjacent nodes | Exfiltration begins |
+| `exfiltration` | Critical asset data being stolen | Health reaches 0 |
+| `contained` | Threat neutralised by agent | — |
+
+### Visibility rules
+- Threats are **hidden** by default — agent cannot see them
+- A threat becomes **visible** when:
+  - Agent scans the node it is on (`scan_node_X`)
+  - Threat age reaches 5 steps (natural escalation)
+  - Threat reaches `lateral_movement` stage
+- Hidden threats still cause damage every step
+
+### Early containment bonus
+Containing a threat before age 3 gives a `+0.1` speed bonus
+on top of the base reward — rewarding proactive defense.
 
 ---
 
