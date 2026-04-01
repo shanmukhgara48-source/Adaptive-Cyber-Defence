@@ -100,6 +100,25 @@ The environment simulates a 5-node corporate network under continuous attack. Th
 
 ---
 
+## Threat lifecycle
+
+Each threat progresses through a kill chain if not contained:
+
+```
+INITIAL ACCESS → EXECUTION → LATERAL MOVEMENT → EXFILTRATION
+(T1566)        (T1204)        (T1021)           (game over)
+↓               ↓              ↓
+block_ip    isolate_machine    block_ip
+```
+
+- Every step a threat ages by +1
+- At age >= 5 the threat becomes visible without scanning
+- At lateral_movement stage the threat spreads to adjacent nodes
+- At exfiltration stage critical asset health drops rapidly
+- Containing a threat early (age < 3) gives a +0.1 speed bonus
+
+---
+
 ## Example Usage
 
 ```bash
@@ -182,3 +201,29 @@ export HF_TOKEN=<your_token>
 export BASE_URL=http://localhost:8000
 python inference.py
 ```
+
+---
+
+## Grading
+
+Each task is scored on a scale of 0.0–1.0 using this formula:
+
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| containment_rate | 50% | Fraction of threats contained by end of episode |
+| critical_health | 20% | Average health of critical assets (criticality >= 0.7) |
+| resource_efficiency | 15% | Average fraction of resources unused per step |
+| avg_step_reward | 15% | Average per-step reward quality |
+
+### Worked example (easy task)
+- containment_rate = 0.80 (4 of 5 threats contained)
+- critical_health  = 0.90 (assets mostly healthy)
+- resource_efficiency = 0.70 (good resource use)
+- avg_step_reward = 0.50 (mostly correct actions)
+- episode_score = 0.50×0.80 + 0.20×0.90 + 0.15×0.70 + 0.15×0.50
+- episode_score = 0.40 + 0.18 + 0.105 + 0.075 = 0.76
+
+Passing thresholds:
+- easy:   0.60
+- medium: 0.55
+- hard:   0.45
