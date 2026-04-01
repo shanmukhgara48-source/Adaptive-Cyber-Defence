@@ -71,6 +71,14 @@ MAX_ACTION_LEN = 64
 MAX_REWARD = 2.0
 MIN_REWARD = -2.0
 
+TECHNIQUE_DEFAULTS = {
+    "phishing":         ("T1566", "Phishing",                       "Initial Access"),
+    "malware":          ("T1204", "User Execution",                  "Execution"),
+    "ddos":             ("T1499", "Endpoint Denial of Service",      "Impact"),
+    "ransomware":       ("T1486", "Data Encrypted for Impact",       "Impact"),
+    "lateral_movement": ("T1021", "Remote Services",                 "Lateral Movement"),
+}
+
 TASKS = [
     {"id": 1, "difficulty": "easy",      "goal": "Detect and block a phishing attack before it harvests credentials"},
     {"id": 2, "difficulty": "medium",    "goal": "Stop malware spread before it reaches lateral movement stage"},
@@ -175,6 +183,35 @@ def _clamp_score():
 
 
 # ─── LOGIC ────────────────────────────────────────────────────────────────────
+def enrich_threat(threat: dict) -> dict:
+    """Ensure every visible threat has all required fields with safe defaults."""
+    if not isinstance(threat, dict):
+        return threat
+
+    t_type = threat.get("type", "malware")
+
+    tech_id, tech_name, tactic = TECHNIQUE_DEFAULTS.get(
+        t_type,
+        ("T1204", "User Execution", "Execution"),
+    )
+
+    threat["id"]    = str(threat.get("id", f"{t_type}_{threat.get('node', 'unknown')}"))
+    threat["type"]  = str(t_type)
+    threat["node"]  = str(threat.get("node", "node_1"))
+    threat["stage"] = str(threat.get("stage", "initial"))
+
+    threat["age"]      = int(threat.get("age", 0))
+    threat["severity"] = float(threat.get("severity", 0.5))
+
+    threat["technique_id"]   = threat.get("technique_id")   or tech_id
+    threat["technique_name"] = threat.get("technique_name") or tech_name
+    threat["tactic"]         = threat.get("tactic")         or tactic
+
+    threat["detection_confidence"] = float(threat.get("detection_confidence", 1.0))
+
+    return threat
+
+
 def _update_visibility():
     for t in state["threats"]:
         if (
@@ -204,7 +241,7 @@ def _visible_threats():
                 "age": t["age"],
                 "mitre_id": t.get("mitre_id", MITRE_MAP.get(t["type"], "T0000")),
             })
-    return out
+    return [enrich_threat(t) for t in out]
 
 
 def _obs():
