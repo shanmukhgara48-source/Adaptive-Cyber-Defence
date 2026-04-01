@@ -11,9 +11,9 @@ from .state import (
     Service,
     Event,
 )
-from .action import Action as ActionEnum, ActionInput, ACTION_PROFILES
+from .action import Action, ActionInput, ACTION_PROFILES
 from .network import NetworkGraph
-from .api import Observation, Action, Reward
+from .api import Observation, ActionRequest, Reward
 
 __all__ = [
     "EnvironmentState",
@@ -27,12 +27,12 @@ __all__ = [
     "User",
     "Service",
     "Event",
-    "ActionEnum",
+    "Action",
+    "ActionRequest",
     "ActionInput",
     "ACTION_PROFILES",
     "NetworkGraph",
     # API schemas
     "Observation",
-    "Action",
     "Reward",
 ]

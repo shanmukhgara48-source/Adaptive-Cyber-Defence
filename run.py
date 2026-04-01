@@ -316,7 +316,7 @@ def main(argv=None):
         cfg_override  = adaptive_attacker.get_attack_config_override(strategy)
         def_profile   = attack_plan["defender_profile"]
 
-        if args.verbose or args.episodes > 1:
+        if (args.verbose or args.episodes > 1) and not args.json:
             print(f"\n{'='*50}")
             print(f"EPISODE {ep + 1} — RED TEAM STRATEGY: {strategy}")
             print(f"Attacker reasoning: {attack_plan['reasoning']}")

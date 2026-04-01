@@ -25,7 +25,7 @@ class Observation(BaseModel):
     done:              bool  = False
 
 
-class Action(BaseModel):
+class ActionRequest(BaseModel):
     """Request body for /step."""
     action: str
 

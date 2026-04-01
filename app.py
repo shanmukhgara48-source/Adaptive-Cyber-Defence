@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
-from models import Observation, Action, Reward
+from models import Observation, ActionRequest, Reward
 
 # ─── DEBUG ────────────────────────────────────────────────────────────────────
 DEBUG = True
@@ -374,7 +374,7 @@ def get_state():
 
 
 @app.post("/step")
-def step(req: Action):
+def step(req: ActionRequest):
     try:
         _validate_state()
 
