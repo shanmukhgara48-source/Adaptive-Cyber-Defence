@@ -128,13 +128,15 @@ def _fresh_state():
 
 state = _fresh_state()
 history = []
+episode_history = []
 
 
 def _reset_state():
-    global history
+    global history, episode_history
     fresh = _fresh_state()
     state.update(fresh)
     history = []
+    episode_history = []
 
 
 def _validate_state():
@@ -308,7 +310,12 @@ def get_tasks():
 
 @app.get("/history")
 def get_history():
-    return history
+    return {
+        "episode_steps": episode_history,
+        "total_steps": len(episode_history),
+        "total_reward": round(sum(s["reward"] for s in episode_history), 4),
+        "final_status": "done" if episode_history and episode_history[-1]["done"] else "in_progress",
+    }
 
 
 @app.get("/reset", response_model=Observation)
@@ -455,6 +462,15 @@ def step(req: Action):
             "action": raw_action,
             "reward": round(reward, 3),
             "attack": matched_threat_type,
+        })
+
+        global episode_history
+        episode_history.append({
+            "step": state["step"],
+            "action": raw_action,
+            "reward": float(reward),
+            "done": bool(state["done"]),
+            "reason": reason,
         })
 
         return safe_response(obs, action=raw_action, reward=reward,
