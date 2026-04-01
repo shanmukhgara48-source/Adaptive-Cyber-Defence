@@ -165,10 +165,12 @@ class TestPhase33AdvancedEdgeCases:
 class TestPhase34CodeQuality:
 
     def _python_files(self):
-        """Return all .py files in the package (excluding __pycache__)."""
+        """Return all .py files in the package (excluding __pycache__ and venv)."""
         return [
             p for p in _PACKAGE_DIR.rglob("*.py")
-            if "__pycache__" not in str(p) and "test_" not in p.name
+            if "__pycache__" not in str(p)
+            and "test_" not in p.name
+            and "venv" not in str(p)
         ]
 
     def test_tc411_all_modules_parse(self):
