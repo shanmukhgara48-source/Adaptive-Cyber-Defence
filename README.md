@@ -9,7 +9,6 @@ tags:
   - openenv
   - reinforcement-learning
   - cybersecurity
-base_path: /web
 ---
 
 # Adaptive Cyber Defense Environment (OpenEnv)
