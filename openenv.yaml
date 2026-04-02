@@ -37,9 +37,9 @@ tasks:
     max_steps: 30
   nightmare:
     name: Nightmare Defense
-    description: "Defend against 5 hidden threats under full partial observability with no prior scan coverage"
+    description: "Nation-state APT. All 5 nodes under simultaneous attack. Near-zero detection, maximum evasion, fastest kill chain. Designed to genuinely challenge frontier LLMs."
     difficulty: nightmare
-    passing_score: 0.45
+    passing_score: 0.25
     max_steps: 25
 
 observation:

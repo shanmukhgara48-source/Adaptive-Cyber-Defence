@@ -36,7 +36,7 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds between retries
 
 MODELS = ["meta-llama/Meta-Llama-3-8B-Instruct"]
-TASKS  = ["easy", "medium", "hard"]
+TASKS  = ["easy", "medium", "hard", "nightmare"]
 
 # ---------------------------------------------------------------------------
 # LLM-based action selection

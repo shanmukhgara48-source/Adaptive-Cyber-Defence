@@ -26,12 +26,13 @@ for _p in (_HERE.parent, _HERE):
 
 from adaptive_cyber_defense.models.action import Action, ActionInput, ACTION_PROFILES
 from adaptive_cyber_defense.models.state  import EnvironmentState
-from adaptive_cyber_defense.tasks         import EasyTask, MediumTask, HardTask
+from adaptive_cyber_defense.tasks         import EasyTask, MediumTask, HardTask, NightmareTask
 
 _TASK_MAP = {
-    "easy":   EasyTask,
-    "medium": MediumTask,
-    "hard":   HardTask,
+    "easy":      EasyTask,
+    "medium":    MediumTask,
+    "hard":      HardTask,
+    "nightmare": NightmareTask,
 }
 
 
