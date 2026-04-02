@@ -353,14 +353,44 @@ def run_task(task_name: str) -> dict:
     else:
         final_status = "max_steps_reached"
 
-    score = max(0.0, min(1.0, total_reward / MAX_STEPS))
+    # ── Grader formula (mirrors tasks/base.py _compute_episode_score) ──────────
+    # score = 0.50×containment_rate + 0.20×critical_health
+    #       + 0.15×resources_remaining + 0.15×avg_step_reward
+    # Raw total_reward/MAX_STEPS is wrong: harder tasks spawn more threats, so
+    # more correct actions accumulate, making hard > easy. The grader formula
+    # uses containment_rate as 50% weight, which naturally decreases with
+    # difficulty (more threats → harder to contain all → lower rate).
+    try:
+        analytics = requests.get(f"{BASE_URL}/analytics", timeout=5).json()
+        soc = analytics.get("soc_metrics", {})
+        net = analytics.get("network_status", {})
+        containment_rate    = float(soc.get("containment_rate", 0.0))
+        critical_health     = float(net.get("system_health", 0)) / 100.0
+        avg_step_reward     = float(soc.get("avg_reward_per_step",
+                                            total_reward / max(1, step_num)))
+        resources_remaining = 1.0  # not exposed by HTTP API; use full budget
+    except Exception:
+        containment_rate    = 0.0
+        critical_health     = 0.0
+        avg_step_reward     = total_reward / max(1, step_num)
+        resources_remaining = 1.0
+
+    score = max(0.0, min(1.0,
+        0.50 * containment_rate
+        + 0.20 * critical_health
+        + 0.15 * resources_remaining
+        + 0.15 * avg_step_reward
+    ))
 
     return {
-        "task_id":      task_id,
-        "steps":        step_num,
-        "total_reward": round(total_reward, 3),
-        "score":        round(score, 3),
-        "status":       final_status,
+        "task_id":           task_id,
+        "steps":             step_num,
+        "total_reward":      round(total_reward, 3),
+        "containment_rate":  round(containment_rate, 3),
+        "critical_health":   round(critical_health, 3),
+        "avg_step_reward":   round(avg_step_reward, 3),
+        "score":             round(score, 3),
+        "status":            final_status,
     }
 
 
@@ -375,18 +405,29 @@ def run():
         result = run_task(task_name)
         results.append((task_name, result))
 
-    sep  = "=" * 60
-    dash = "-" * 60
+    sep  = "=" * 80
+    dash = "-" * 80
     print(f"\n{sep}")
-    print("BASELINE RESULTS")
+    print("BASELINE RESULTS  (grader formula: 0.50×contain + 0.20×health + 0.15×res + 0.15×avg_r)")
     print(sep)
-    print(f"{'Task':<12} {'Steps':<8} {'Total Reward':<16} {'Score':<8} {'Status'}")
+    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'AvgRew':<9} {'Score':<8} {'Status'}")
     print(dash)
+    scores = []
     for task_name, r in results:
+        scores.append(r['score'])
         print(
-            f"{task_name:<12} {r['steps']:<8} {r['total_reward']:<16} "
-            f"{r['score']:<8} {r['status']}"
+            f"{task_name:<12} {r['steps']:<7} "
+            f"{r['containment_rate']:<10.3f} {r['critical_health']:<10.3f} "
+            f"{r['avg_step_reward']:<9.3f} {r['score']:<8.3f} {r['status']}"
         )
+    print(dash)
+
+    # Monotone-decreasing check
+    decreasing = all(scores[i] >= scores[i+1] for i in range(len(scores)-1))
+    print(f"\nScores decrease with difficulty: {'YES ✓' if decreasing else 'NO ✗'}")
+    for (task_name, r), threshold in zip(results, [0.55, 0.55, 0.45, 0.25]):
+        status = "PASS ✓" if r['score'] >= threshold else "FAIL ✗"
+        print(f"  {task_name:<12} score={r['score']:.3f}  threshold={threshold}  {status}")
     print(sep)
 
 

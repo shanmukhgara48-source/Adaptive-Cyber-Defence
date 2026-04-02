@@ -301,9 +301,12 @@ def _visible_threats():
 
 def _obs():
     scanned = state["scanned_nodes"]
+    hidden_count = sum(
+        1 for t in state["threats"] if not t["visible"] and not t.get("contained")
+    )
     return {
         "visible_threats": _visible_threats(),
-        "hidden_node_count": TOTAL_NODES - len(scanned),
+        "hidden_node_count": hidden_count,
         "scan_coverage": round(len(scanned) / TOTAL_NODES, 2),
         "system_health": state["system_health"],
         "score": round(state["score"], 2),
