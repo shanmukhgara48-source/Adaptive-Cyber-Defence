@@ -593,6 +593,167 @@ def attacker_report():
     }
 
 
+MITRE_INTEL = {
+    "phishing": {
+        "technique_id":   "T1566",
+        "technique_name": "Phishing",
+        "tactic":         "Initial Access",
+        "tactic_id":      "TA0001",
+        "severity":       "HIGH",
+        "recommended_action": "block_ip",
+        "description": "Adversary sending malicious emails to gain initial access",
+        "indicators": ["suspicious_email", "malicious_attachment", "fake_link"],
+        "mitigation": "Block source IP, enable email filtering, user awareness training",
+        "kill_chain_phase": "delivery",
+        "similar_incidents": 3,
+    },
+    "malware": {
+        "technique_id":   "T1204",
+        "technique_name": "User Execution",
+        "tactic":         "Execution",
+        "tactic_id":      "TA0002",
+        "severity":       "CRITICAL",
+        "recommended_action": "isolate_machine",
+        "description": "Malicious code executing on compromised endpoint",
+        "indicators": ["unusual_process", "file_modification", "registry_change"],
+        "mitigation": "Isolate affected machine, run forensic analysis, restore from backup",
+        "kill_chain_phase": "exploitation",
+        "similar_incidents": 7,
+    },
+    "ddos": {
+        "technique_id":   "T1499",
+        "technique_name": "Endpoint Denial of Service",
+        "tactic":         "Impact",
+        "tactic_id":      "TA0040",
+        "severity":       "HIGH",
+        "recommended_action": "patch",
+        "description": "Flooding target service to cause denial of service",
+        "indicators": ["high_traffic", "service_unavailable", "cpu_spike"],
+        "mitigation": "Apply rate limiting patch, enable DDoS protection, null-route attacker",
+        "kill_chain_phase": "actions_on_objectives",
+        "similar_incidents": 2,
+    },
+    "ransomware": {
+        "technique_id":   "T1486",
+        "technique_name": "Data Encrypted for Impact",
+        "tactic":         "Impact",
+        "tactic_id":      "TA0040",
+        "severity":       "CRITICAL",
+        "recommended_action": "isolate_machine",
+        "description": "Encrypting files to extort ransom from victim organization",
+        "indicators": ["file_encryption", "ransom_note", "shadow_copy_deletion"],
+        "mitigation": "Immediately isolate machine, do not pay ransom, restore from backup",
+        "kill_chain_phase": "actions_on_objectives",
+        "similar_incidents": 5,
+    },
+    "lateral_movement": {
+        "technique_id":   "T1021",
+        "technique_name": "Remote Services",
+        "tactic":         "Lateral Movement",
+        "tactic_id":      "TA0008",
+        "severity":       "HIGH",
+        "recommended_action": "block_ip",
+        "description": "Adversary moving through network using remote services",
+        "indicators": ["unusual_login", "remote_access", "credential_reuse"],
+        "mitigation": "Block internal IP, reset credentials, enable MFA",
+        "kill_chain_phase": "lateral_movement",
+        "similar_incidents": 4,
+    },
+}
+
+SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
+
+
+@app.get("/threat-intel")
+def threat_intel():
+    """Returns MITRE ATT&CK enriched threat intelligence about active threats."""
+    try:
+        _validate_state()
+        visible_threats = _visible_threats()
+        scan_coverage   = round(len(state["scanned_nodes"]) / TOTAL_NODES, 3)
+        system_health   = state["system_health"]
+
+        active_campaigns = []
+        for threat in visible_threats:
+            threat_type = threat.get("type", "unknown").lower()
+            intel = MITRE_INTEL.get(threat_type, {})
+            active_campaigns.append({
+                "threat_id":          threat.get("id", f"{threat_type}_{threat.get('node', 'unknown')}"),
+                "threat_type":        threat_type,
+                "node":               threat.get("node", "unknown"),
+                "stage":              threat.get("stage", "unknown"),
+                "age":                threat.get("age", 0),
+                "severity":           intel.get("severity", "UNKNOWN"),
+                "technique_id":       intel.get("technique_id", threat.get("technique_id", "")),
+                "technique_name":     intel.get("technique_name", threat.get("technique_name", "")),
+                "tactic":             intel.get("tactic", threat.get("tactic", "")),
+                "tactic_id":          intel.get("tactic_id", ""),
+                "recommended_action": intel.get("recommended_action", "ignore"),
+                "description":        intel.get("description", ""),
+                "indicators":         intel.get("indicators", []),
+                "mitigation":         intel.get("mitigation", ""),
+                "kill_chain_phase":   intel.get("kill_chain_phase", ""),
+                "similar_incidents":  intel.get("similar_incidents", 0),
+                "confidence":         round(threat.get("detection_confidence", 1.0), 3),
+                "urgency":            "IMMEDIATE" if threat.get("age", 0) >= 3 else "MONITOR",
+            })
+
+        active_campaigns.sort(key=lambda x: SEVERITY_ORDER.get(x["severity"], 4))
+
+        # Derive compromised nodes from lateral_movement threats
+        compromised = list({
+            t["node"] for t in state["threats"]
+            if t.get("stage") == "lateral_movement" and not t.get("contained")
+        })
+
+        if system_health < 30 or len(compromised) >= 3:
+            risk_level = "CRITICAL"
+        elif system_health < 60 or len(compromised) >= 2:
+            risk_level = "HIGH"
+        elif system_health < 80 or len(compromised) >= 1:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+
+        return {
+            "timestamp": state["step"],
+            "risk_level": risk_level,
+            "active_campaigns": active_campaigns,
+            "threat_summary": {
+                "total_visible":    len(visible_threats),
+                "critical_count":   sum(1 for t in active_campaigns if t["severity"] == "CRITICAL"),
+                "high_count":       sum(1 for t in active_campaigns if t["severity"] == "HIGH"),
+                "immediate_action": sum(1 for t in active_campaigns if t["urgency"] == "IMMEDIATE"),
+            },
+            "network_assessment": {
+                "risk_level":      risk_level,
+                "compromised_nodes": compromised,
+                "scan_coverage":   scan_coverage,
+                "system_health":   system_health,
+                "unscanned_nodes": max(0, TOTAL_NODES - len(state["scanned_nodes"])),
+            },
+            "recommended_actions": [
+                t["recommended_action"]
+                for t in active_campaigns
+                if t["urgency"] == "IMMEDIATE"
+            ][:3],
+            "mitre_framework": "ATT&CK v14.0",
+        }
+
+    except Exception as e:
+        log.error(f"/threat-intel error: {e}", exc_info=True)
+        return {
+            "timestamp":          0,
+            "risk_level":         "UNKNOWN",
+            "active_campaigns":   [],
+            "threat_summary":     {"total_visible": 0},
+            "network_assessment": {},
+            "recommended_actions": [],
+            "error":              str(e),
+            "mitre_framework":    "ATT&CK v14.0",
+        }
+
+
 def main():
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
