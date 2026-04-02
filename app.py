@@ -95,6 +95,18 @@ TASKS = [
     {"id": 4, "difficulty": "nightmare", "goal": "Defend against multiple hidden threats under limited visibility and no scan budget"},
 ]
 
+# Per-task overrides applied at reset time
+TASK_OVERRIDES = {
+    "easy":      {"threat_count": 3, "age_visibility_threshold": 5},
+    "medium":    {"threat_count": 4, "age_visibility_threshold": 5},
+    "hard":      {"threat_count": 5, "age_visibility_threshold": 5},
+    "nightmare": {"threat_count": 5, "age_visibility_threshold": 8},  # threats stay hidden longer
+}
+
+# Active task config (mutated on each /reset)
+current_task_config: dict = TASK_OVERRIDES["easy"]
+current_task_name:   str  = "easy"
+
 # Action translation: app.py lowercase → attacker uppercase
 ACTION_TRANSLATION = {
     "block_ip":        "BLOCK_IP",
@@ -135,7 +147,8 @@ def _make_threats():
 def _make_threats_fixed():
     """Make threats with correct mitre_id per type (called after type is set)."""
     threats = []
-    for _ in range(3):
+    count = current_task_config.get("threat_count", 3)
+    for _ in range(count):
         t_type = random.choice(ATTACKS)
         threats.append({
             "type": t_type,
@@ -254,10 +267,11 @@ def enrich_threat(threat: dict) -> dict:
 
 
 def _update_visibility():
+    age_thresh = current_task_config.get("age_visibility_threshold", 5)
     for t in state["threats"]:
         if (
             t["node"] in state["scanned_nodes"]
-            or t["age"] >= 5
+            or t["age"] >= age_thresh
             or t["stage"] == "lateral_movement"
         ):
             t["visible"] = True
@@ -371,8 +385,12 @@ async def generic_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ─── INPUT MODEL ──────────────────────────────────────────────────────────────
+# ─── INPUT MODELS ─────────────────────────────────────────────────────────────
 # Action (request body) and Observation/Reward (response) are imported from models.
+
+class ResetRequest(BaseModel):
+    task: str = "easy"
+    seed: int = 0
 
 
 # ─── ENDPOINTS ────────────────────────────────────────────────────────────────
@@ -400,11 +418,17 @@ def get_history():
 @app.get("/reset/")
 @app.post("/reset")
 @app.post("/reset/")
-def reset():
-    global current_attack_plan
+def reset(req: ResetRequest = None):
+    global current_attack_plan, current_task_config, current_task_name
+    task_name = (req.task.lower().strip() if req and req.task else "easy")
+    if task_name not in TASK_OVERRIDES:
+        task_name = "easy"
+    current_task_name   = task_name
+    current_task_config = TASK_OVERRIDES[task_name]
     _reset_state()
     current_attack_plan = adaptive_attacker.on_episode_start()
     obs = _obs()
+    obs["task"]        = task_name
     obs["attack_plan"] = current_attack_plan
     return obs
 

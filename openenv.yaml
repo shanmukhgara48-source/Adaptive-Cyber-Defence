@@ -21,7 +21,7 @@ tasks:
     name: Easy Defense
     description: "Detect and block a single phishing attack before it harvests credentials"
     difficulty: easy
-    passing_score: 0.45
+    passing_score: 0.55
     max_steps: 50
   medium:
     name: Medium Defense
@@ -40,7 +40,7 @@ tasks:
     description: "Nation-state APT. All 5 nodes under simultaneous attack. Near-zero detection, maximum evasion, fastest kill chain. Designed to genuinely challenge frontier LLMs."
     difficulty: nightmare
     passing_score: 0.25
-    max_steps: 25
+    max_steps: 20
 
 observation:
   type: dict

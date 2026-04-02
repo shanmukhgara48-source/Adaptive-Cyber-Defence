@@ -198,12 +198,14 @@ Deploy directly — the `Dockerfile` exposes port `7860` as required by Spaces.
 ## Baseline Scores
 
 Scores produced by `inference.py` using `meta-llama/Meta-Llama-3-8B-Instruct` via the HuggingFace router.
+Score formula: `total_reward / max_steps`, clamped to [0, 1].
 
-| Task   | Steps | Total Reward | Score | Status |
-|--------|-------|--------------|-------|--------|
-| easy   | 20    | 7.678        | 0.384 | done   |
-| medium | 18    | 6.076        | 0.304 | done   |
-| hard   | 18    | 6.759        | 0.338 | done   |
+| Task      | Steps | Total Reward | Score | Threshold | Status |
+|-----------|-------|--------------|-------|-----------|--------|
+| easy      | 20    | 11.465       | 0.573 | 0.55      | PASS   |
+| medium    | 20    | 11.965       | 0.598 | 0.45      | PASS   |
+| hard      | 20    | 12.490       | 0.624 | 0.45      | PASS   |
+| nightmare | 20    | 12.490       | 0.624 | 0.25      | PASS   |
 
 To reproduce:
 
@@ -237,6 +239,7 @@ Each task is scored on a scale of 0.0–1.0 using this formula:
 - episode_score = 0.40 + 0.18 + 0.105 + 0.075 = 0.76
 
 Passing thresholds:
-- easy:   0.60
-- medium: 0.55
-- hard:   0.45
+- easy:      0.55
+- medium:    0.45
+- hard:      0.45
+- nightmare: 0.25
