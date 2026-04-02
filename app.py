@@ -6,6 +6,15 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 from models import Observation, ActionRequest, Reward
+import importlib.util as _ilu, sys as _sys, os as _os
+_aa_spec = _ilu.spec_from_file_location(
+    "adaptive_attacker",
+    _os.path.join(_os.path.dirname(__file__), "engines", "adaptive_attacker.py"),
+)
+_aa_mod = _ilu.module_from_spec(_aa_spec)
+_sys.modules["adaptive_attacker"] = _aa_mod   # must register before exec for @dataclass
+_aa_spec.loader.exec_module(_aa_mod)
+AdaptiveAttacker = _aa_mod.AdaptiveAttacker
 
 # ─── DEBUG ────────────────────────────────────────────────────────────────────
 DEBUG = True
@@ -86,9 +95,26 @@ TASKS = [
     {"id": 4, "difficulty": "nightmare", "goal": "Defend against multiple hidden threats under limited visibility and no scan budget"},
 ]
 
+# Action translation: app.py lowercase → attacker uppercase
+ACTION_TRANSLATION = {
+    "block_ip":        "BLOCK_IP",
+    "isolate_machine": "ISOLATE_NODE",
+    "patch":           "PATCH_VULNERABILITY",
+    "ignore":          "IGNORE",
+}
+
+def translate_action(raw_action: str) -> str:
+    """Translate a lowercase app.py action to the uppercase name AdaptiveAttacker expects."""
+    if raw_action.startswith("scan"):
+        return "SCAN"
+    return ACTION_TRANSLATION.get(raw_action, raw_action.upper())
+
 # ─── APP ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Adaptive Cyber Defense", version="2.0.0")
 
+# ─── RED TEAM ─────────────────────────────────────────────────────────────────
+adaptive_attacker = AdaptiveAttacker(seed=42)
+current_attack_plan: dict = {}
 
 # ─── STATE ────────────────────────────────────────────────────────────────────
 def _make_threats():
@@ -355,13 +381,17 @@ def get_history():
     }
 
 
-@app.get("/reset", response_model=Observation)
-@app.get("/reset/", response_model=Observation)
-@app.post("/reset", response_model=Observation)
-@app.post("/reset/", response_model=Observation)
+@app.get("/reset")
+@app.get("/reset/")
+@app.post("/reset")
+@app.post("/reset/")
 def reset():
+    global current_attack_plan
     _reset_state()
-    return Observation(**_obs())
+    current_attack_plan = adaptive_attacker.on_episode_start()
+    obs = _obs()
+    obs["attack_plan"] = current_attack_plan
+    return obs
 
 
 @app.get("/state", response_model=Observation)
@@ -510,6 +540,21 @@ def step(req: ActionRequest):
             "reason": reason,
         })
 
+        # ── Red team: observe defender action ─────────────────────────────────
+        translated = translate_action(raw_action)
+        threat_ctx = (matched_threat_type or "UNKNOWN").upper()
+        adaptive_attacker.observe_defender_action(translated, threat_ctx)
+
+        # ── Red team: episode end update ──────────────────────────────────────
+        if state["done"]:
+            contained = sum(1 for t in state["threats"] if t.get("contained"))
+            total     = max(1, len(state["threats"]))
+            defender_won = (contained / total) >= 0.8
+            adaptive_attacker.on_episode_end(
+                defender_won=defender_won,
+                score=round(state["score"], 4),
+            )
+
         return safe_response(obs, action=raw_action, reward=reward,
                              reason=reason, confidence=confidence)
 
@@ -524,6 +569,28 @@ def step(req: ActionRequest):
         return safe_response(obs, action="", reward=_clamp_reward(-0.5),
                              reason="Unexpected error. State preserved.",
                              confidence=0.0, error="invalid action")
+
+
+@app.get("/attacker-report")
+def attacker_report():
+    p = adaptive_attacker.defender_profile
+    return {
+        "episode_count":     adaptive_attacker.episode_count,
+        "current_strategy":  adaptive_attacker.current_strategy,
+        "defender_profile": {
+            "strategy_label":   p.get_defender_strategy_label(),
+            "isolation_rate":   round(p.isolation_rate, 3),
+            "block_rate":       round(p.block_rate,     3),
+            "scan_rate":        round(p.scan_rate,      3),
+            "patch_rate":       round(p.patch_rate,     3),
+            "most_used_action": p.get_most_used_action(),
+            "steps_observed":   p.steps_observed,
+            "action_counts":    dict(p.action_counts),
+        },
+        "strategy_history": adaptive_attacker.strategy_history[-5:],
+        "adaptation_log":   adaptive_attacker.adaptation_log[-10:],
+        "full_report":      adaptive_attacker.get_full_adaptation_report(),
+    }
 
 
 def main():
