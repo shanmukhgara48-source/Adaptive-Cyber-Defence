@@ -1,8 +1,5 @@
 ---
 title: Adaptive Cyber Defense Environment
-emoji: 🛡️
-colorFrom: red
-colorTo: purple
 sdk: docker
 pinned: false
 tags:
