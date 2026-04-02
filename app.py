@@ -164,13 +164,28 @@ state = _fresh_state()
 history = []
 episode_history = []
 
+# ── Analytics tracking ────────────────────────────────────────────────────────
+episode_actions_taken: list = []
+episode_rewards: list = []
+threats_detected_this_episode: set = set()
+threats_contained_this_episode: set = set()
+false_positive_actions: int = 0
+
 
 def _reset_state():
     global history, episode_history
+    global episode_actions_taken, episode_rewards
+    global threats_detected_this_episode, threats_contained_this_episode
+    global false_positive_actions
     fresh = _fresh_state()
     state.update(fresh)
     history = []
     episode_history = []
+    episode_actions_taken = []
+    episode_rewards = []
+    threats_detected_this_episode = set()
+    threats_contained_this_episode = set()
+    false_positive_actions = 0
 
 
 def _validate_state():
@@ -540,6 +555,28 @@ def step(req: ActionRequest):
             "reason": reason,
         })
 
+        # ── Analytics tracking ────────────────────────────────────────────────
+        global episode_actions_taken, episode_rewards
+        global threats_detected_this_episode, threats_contained_this_episode
+        global false_positive_actions
+        episode_actions_taken.append(raw_action)
+        episode_rewards.append(reward)
+        _MITIGATIONS = {"block_ip", "isolate_machine", "patch"}
+        if raw_action in _MITIGATIONS and reward < _clamp_reward(0.0):
+            false_positive_actions += 1
+        for threat in obs.get("visible_threats", []):
+            tid = threat.get("id", "")
+            if tid:
+                threats_detected_this_episode.add(tid)
+            if threat.get("stage") == "contained":
+                threats_contained_this_episode.add(tid)
+        # also mark threats contained via matched flag
+        if matched and matched_threat_type:
+            for t in state["threats"]:
+                if t.get("contained") and t.get("type") == matched_threat_type:
+                    tid = str(t.get("id", f"{t['type']}_{t['node']}"))
+                    threats_contained_this_episode.add(tid)
+
         # ── Red team: observe defender action ─────────────────────────────────
         translated = translate_action(raw_action)
         threat_ctx = (matched_threat_type or "UNKNOWN").upper()
@@ -751,6 +788,133 @@ def threat_intel():
             "recommended_actions": [],
             "error":              str(e),
             "mitre_framework":    "ATT&CK v14.0",
+        }
+
+
+@app.get("/analytics")
+def get_analytics():
+    """Returns real SOC metrics for the current episode."""
+    try:
+        _validate_state()
+        visible_threats = _visible_threats()
+        total_steps   = state["step"]
+        system_health = state["system_health"]
+        scan_coverage = round(len(state["scanned_nodes"]) / TOTAL_NODES, 3)
+
+        n_detected  = max(1, len(threats_detected_this_episode))
+        n_contained = len(threats_contained_this_episode)
+
+        mttd = round(total_steps / n_detected, 2)
+        mttr = round(total_steps / max(1, n_contained), 2)
+
+        # Detection rate: detected / (detected + remaining hidden)
+        hidden_count = TOTAL_NODES - len(state["scanned_nodes"])
+        detection_rate = round(
+            len(threats_detected_this_episode) /
+            max(1, len(threats_detected_this_episode) + hidden_count), 3
+        )
+
+        containment_rate = round(n_contained / n_detected, 3)
+
+        total_mitigations = sum(
+            1 for a in episode_actions_taken
+            if a in {"block_ip", "isolate_machine", "patch"}
+        )
+        false_positive_rate = round(
+            false_positive_actions / max(1, total_mitigations), 3
+        )
+
+        avg_reward = round(
+            sum(episode_rewards) / max(1, len(episode_rewards)), 4
+        )
+
+        if len(episode_rewards) >= 10:
+            first_5 = sum(episode_rewards[:5]) / 5
+            last_5  = sum(episode_rewards[-5:]) / 5
+            trend = "IMPROVING" if last_5 > first_5 else "DECLINING"
+        else:
+            trend = "INSUFFICIENT_DATA"
+
+        action_counts: dict = {}
+        for a in episode_actions_taken:
+            action_counts[a] = action_counts.get(a, 0) + 1
+        most_used = max(action_counts, key=action_counts.get) if action_counts else "none"
+
+        if containment_rate >= 0.8 and system_health >= 70:
+            grade = "A"
+        elif containment_rate >= 0.6 and system_health >= 50:
+            grade = "B"
+        elif containment_rate >= 0.4 and system_health >= 30:
+            grade = "C"
+        else:
+            grade = "D"
+
+        # Recommended next action
+        types_visible = [t.get("type") for t in visible_threats]
+        if "phishing" in types_visible:
+            recommended = "block_ip"
+        elif any(t in types_visible for t in ("malware", "ransomware")):
+            recommended = "isolate_machine"
+        elif "ddos" in types_visible:
+            recommended = "patch"
+        elif scan_coverage < 1.0:
+            scanned = state["scanned_nodes"]
+            unscanned = [f"scan_node_{i}" for i in range(1, TOTAL_NODES + 1)
+                         if f"node_{i}" not in scanned]
+            recommended = unscanned[0] if unscanned else "ignore"
+        else:
+            recommended = "ignore"
+
+        compromised = list({
+            t["node"] for t in state["threats"]
+            if t.get("stage") == "lateral_movement" and not t.get("contained")
+        })
+
+        return {
+            "episode_step":      total_steps,
+            "performance_grade": grade,
+            "soc_metrics": {
+                "mean_time_to_detect":  mttd,
+                "mean_time_to_respond": mttr,
+                "detection_rate":       detection_rate,
+                "containment_rate":     containment_rate,
+                "false_positive_rate":  false_positive_rate,
+                "avg_reward_per_step":  avg_reward,
+                "reward_trend":         trend,
+            },
+            "threat_tracking": {
+                "threats_detected":      len(threats_detected_this_episode),
+                "threats_contained":     n_contained,
+                "threats_active":        len(visible_threats),
+                "threats_ids_detected":  list(threats_detected_this_episode),
+            },
+            "network_status": {
+                "system_health":     system_health,
+                "scan_coverage":     scan_coverage,
+                "compromised_nodes": compromised,
+                "nodes_at_risk":     len(compromised),
+            },
+            "agent_behavior": {
+                "total_actions":    len(episode_actions_taken),
+                "action_breakdown": action_counts,
+                "most_used_action": most_used,
+                "false_positives":  false_positive_actions,
+            },
+            "recommended_next_action": recommended,
+            "attacker_strategy": adaptive_attacker.current_strategy,
+        }
+
+    except Exception as e:
+        log.error(f"/analytics error: {e}", exc_info=True)
+        return {
+            "episode_step":      0,
+            "performance_grade": "UNKNOWN",
+            "soc_metrics":       {},
+            "threat_tracking":   {},
+            "network_status":    {},
+            "agent_behavior":    {},
+            "recommended_next_action": "ignore",
+            "error": str(e),
         }
 
 
