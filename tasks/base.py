@@ -99,7 +99,7 @@ class TaskResult:
     avg_resource_left: float
     total_reward: float
     step_rewards: List[float] = field(default_factory=list)
-    reward_breakdowns: List[Dict[str, Any]] = field(default_factory=list)
+    reward_breakdowns: List[Dict[str, Any]] = field(default_factory=list)  # per-step breakdown dicts for external analysis
     terminal_reason: str = "max_steps"
 
     def summary(self) -> str:

@@ -95,6 +95,11 @@ class RewardWeights:
     Weight vector for the reward function.
     All weights ≥ 0.  Penalty weights are subtracted.
 
+    Positive weights (0.40+0.20+0.10+0.15 = 0.85) intentionally do not sum
+    to 1.0 — the final reward is clamped to [0,1] regardless, and keeping
+    the sum < 1.0 leaves headroom for the survival bonus to always be positive
+    even on steps with no containment.
+
     Defaults calibrated for medium-difficulty balanced play.
     Override for task-specific tuning (EASY tasks use lighter penalties).
     """
@@ -213,12 +218,22 @@ class RewardFunction:
         bd = RewardBreakdown()
 
         # ---- 1. Containment bonus ----------------------------------------
-        # Find threats that were active before but contained after
+        # Find threats newly contained this step. Two cases:
+        #   A) env._build_state filters contained threats from active_threats:
+        #      they appear in state_before but not state_after → id disappears.
+        #   B) Tests / external callers may leave contained threats in the list
+        #      with is_contained=True → detect via flag.
         active_before_ids = {t.id for t in state_before.active_threats}
-        contained_after_ids = {
+        after_non_contained = {
+            t.id for t in state_after.active_threats if not t.is_contained
+        }
+        # Threats flagged contained in state_after (case B)
+        flagged_contained = {
             t.id for t in state_after.active_threats if t.is_contained
         }
-        newly_contained_ids = active_before_ids & contained_after_ids
+        # Threats that disappeared entirely (case A)
+        disappeared = active_before_ids - {t.id for t in state_after.active_threats}
+        newly_contained_ids = (active_before_ids & flagged_contained) | disappeared
 
         containment_raw = 0.0
         for tid in newly_contained_ids:

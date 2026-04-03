@@ -206,6 +206,7 @@ class AdaptiveAttacker:
 
         # 15% random exploration so defender can't perfectly predict us
         if self.rng.random() < 0.15:
+            # list() ensures stable ordering (dict insertion-order, Python 3.7+)
             counter = self.rng.choice(list(self.COUNTER_STRATEGY.values()))
             reasoning = (
                 f"Randomizing strategy (15% chance) to stay unpredictable. "

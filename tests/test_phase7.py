@@ -53,12 +53,12 @@ class TestOpenEnvYaml:
         actions = doc["action"]["actions"]
         assert len(actions) == 5
 
-    def test_network_has_eight_nodes(self):
+    def test_network_has_five_nodes(self):
         yaml = pytest.importorskip("yaml")
         with open(ROOT / "openenv.yaml") as f:
             doc = yaml.safe_load(f)
-        assert doc["network"]["nodes"] == 8
-        assert len(doc["network"]["assets"]) == 8
+        assert doc["network"]["nodes"] == 5
+        assert len(doc["network"]["assets"]) == 5
 
 
 # ---------------------------------------------------------------------------

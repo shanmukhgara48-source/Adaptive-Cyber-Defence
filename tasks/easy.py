@@ -1,13 +1,13 @@
 """
-EASY Task: Single-stage attack, high detection probability.
+EASY Task: Single-stage attacks, high detection probability.
 
 Scenario
 --------
-A single workstation has been targeted by a phishing campaign.
+Three workstations have been targeted by phishing campaigns.
 The SOC has high-quality logging and ample resources.
-The attack progresses slowly, giving the defender time to respond.
+The attacks progress slowly, giving the defender time to respond.
 
-Win condition: contain the threat before it reaches LATERAL_SPREAD.
+Win condition: contain threats before they reach LATERAL_SPREAD.
 Passing score: 0.55
 """
 

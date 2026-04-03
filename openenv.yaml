@@ -2,7 +2,7 @@ spec_version: "1.0"
 id: adaptive-cyber-defense
 name: adaptive-cyber-defense
 version: "2.0.0"
-description: "Autonomous SOC assistant defending an 8-node corporate network against multi-stage cyber attacks under partial observability"
+description: "Autonomous SOC assistant defending a 5-node corporate network against multi-stage cyber attacks under partial observability"
 author: "shanmukhgara"
 tags:
   - cybersecurity
@@ -27,11 +27,11 @@ tasks:
     name: Medium Defense
     description: "Stop malware and ransomware spread across 3 nodes before lateral movement triggers"
     difficulty: medium
-    passing_score: 0.45
-    max_steps: 40
+    passing_score: 0.55
+    max_steps: 50
   hard:
     name: Hard Defense
-    description: "Handle multi-stage attacks across all 8 nodes simultaneously with limited scan budget"
+    description: "Handle multi-stage attacks across all 5 nodes simultaneously with limited scan budget"
     difficulty: hard
     passing_score: 0.45
     max_steps: 30
@@ -54,7 +54,7 @@ observation:
       description: "Threats currently visible to the agent. Each entry includes type, node, stage, age, and MITRE ATT&CK technique ID. Hidden threats are not included."
     - name: hidden_node_count
       type: int
-      description: "Number of nodes not yet scanned by the agent (0–8)"
+      description: "Number of nodes not yet scanned by the agent (0–5)"
     - name: scan_coverage
       type: float
       description: "Fraction of nodes that have been scanned (0.0 = none, 1.0 = all)"
@@ -88,7 +88,7 @@ action:
     - name: ignore
       description: "No mitigation applied. Health -10, reward penalty"
     - name: scan
-      description: "Scan a node to reveal any hidden threats on that node (scan_node_1 through scan_node_8)"
+      description: "Scan a node to reveal any hidden threats on that node (scan_node_1 through scan_node_5)"
 
 reward:
   range: [0.0, 1.0]
@@ -103,35 +103,27 @@ reward:
 termination:
   conditions:
     - system_health <= 0
-    - step >= max_steps
+    - step >= max_steps  # per-task: easy=30, medium=50, hard=30, nightmare=20
 
 network:
-  nodes: 8
+  nodes: 5
+  description: "5-node network (node_1 through node_5). Threats spawn on these nodes."
   assets:
-    - id: workstation-1
+    - id: node_1
       type: workstation
       criticality: 0.3
-    - id: workstation-2
+    - id: node_2
       type: workstation
       criticality: 0.3
-    - id: workstation-3
-      type: workstation
-      criticality: 0.3
-    - id: server-1
+    - id: node_3
       type: server
       criticality: 0.7
-    - id: server-2
+    - id: node_4
       type: server
       criticality: 0.7
-    - id: database-1
+    - id: node_5
       type: database
       criticality: 0.9
-    - id: router-1
-      type: router
-      criticality: 0.6
-    - id: firewall-1
-      type: firewall
-      criticality: 0.8
 
 mitre_attack:
   version: "14.0"

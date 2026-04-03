@@ -17,7 +17,8 @@ _aa_spec.loader.exec_module(_aa_mod)
 AdaptiveAttacker = _aa_mod.AdaptiveAttacker
 
 # ─── DEBUG ────────────────────────────────────────────────────────────────────
-DEBUG = True
+import os as _os
+DEBUG = _os.getenv("DEBUG", "false").lower() == "true"
 logging.basicConfig(level=logging.DEBUG if DEBUG else logging.WARNING)
 log = logging.getLogger("cyber_defense")
 
@@ -97,10 +98,10 @@ TASKS = [
 
 # Per-task overrides applied at reset time
 TASK_OVERRIDES = {
-    "easy":      {"threat_count": 3, "age_visibility_threshold": 5},
-    "medium":    {"threat_count": 4, "age_visibility_threshold": 5},
-    "hard":      {"threat_count": 5, "age_visibility_threshold": 5},
-    "nightmare": {"threat_count": 5, "age_visibility_threshold": 8},  # threats stay hidden longer
+    "easy":      {"threat_count": 3, "age_visibility_threshold": 5, "max_steps": 30},
+    "medium":    {"threat_count": 4, "age_visibility_threshold": 5, "max_steps": 50},
+    "hard":      {"threat_count": 5, "age_visibility_threshold": 5, "max_steps": 30},
+    "nightmare": {"threat_count": 5, "age_visibility_threshold": 8, "max_steps": 20},
 }
 
 # Active task config (mutated on each /reset)
@@ -125,25 +126,10 @@ def translate_action(raw_action: str) -> str:
 app = FastAPI(title="Adaptive Cyber Defense", version="2.0.0")
 
 # ─── RED TEAM ─────────────────────────────────────────────────────────────────
-adaptive_attacker = AdaptiveAttacker(seed=42)
+adaptive_attacker = AdaptiveAttacker(seed=int(_os.getenv("ATTACKER_SEED", "42")))
 current_attack_plan: dict = {}
 
 # ─── STATE ────────────────────────────────────────────────────────────────────
-def _make_threats():
-    return [
-        {
-            "type": random.choice(ATTACKS),
-            "node": random.choice(NODES),
-            "visible": False,
-            "age": 0,
-            "stage": "initial",
-            "contained": False,
-            "mitre_id": MITRE_MAP.get(random.choice(ATTACKS), "T0000"),
-        }
-        for _ in range(3)
-    ]
-
-
 def _make_threats_fixed():
     """Make threats with correct mitre_id per type (called after type is set)."""
     threats = []
@@ -234,6 +220,7 @@ def _clamp_reward(r: float) -> float:
 def _clamp_score():
     if not math.isfinite(state["score"]):
         state["score"] = 0.0
+    state["score"] = max(0.0, min(1.0, state["score"]))
 
 
 # ─── LOGIC ────────────────────────────────────────────────────────────────────
@@ -283,6 +270,8 @@ def _age_threats():
             t["age"] += 1
             if t["age"] >= 8 and t["stage"] == "initial":
                 t["stage"] = "lateral_movement"
+                # Update MITRE ID to match the new stage (T1021 = Remote Services)
+                t["mitre_id"] = MITRE_MAP.get("lateral_movement", "T1021")
 
 
 def _visible_threats():
@@ -381,8 +370,8 @@ async def generic_exception_handler(request: Request, exc: Exception):
         _reset_state()
         obs = _obs()
     return JSONResponse(
-        status_code=200,
-        content=safe_response(obs, action="", reward=-0.5,
+        status_code=500,
+        content=safe_response(obs, action="", reward=_clamp_reward(-0.5),
                                reason="Internal error. State preserved.",
                                confidence=0.0, error="internal error"),
     )
@@ -417,6 +406,7 @@ def get_history():
     }
 
 
+# NOTE: global state — single-user server only. For multi-user add session tokens.
 @app.get("/reset")
 @app.get("/reset/")
 @app.post("/reset")
@@ -445,6 +435,7 @@ def get_state():
     return Observation(**_obs())
 
 
+# TODO: add rate limiting (e.g. slowapi) and session tokens for multi-user deployments
 @app.post("/step")
 def step(req: ActionRequest):
     try:
@@ -473,7 +464,7 @@ def step(req: ActionRequest):
             state["score"] += reward
             _clamp_score()
             state["step"] += 1
-            if state["system_health"] <= 0 or state["step"] >= 50:
+            if state["system_health"] <= 0 or state["step"] >= current_task_config.get("max_steps", 50):
                 state["done"] = True
             obs = _obs()
             history.append({"step": state["step"], "action": raw_action,
@@ -493,8 +484,8 @@ def step(req: ActionRequest):
 
         # ── SCAN ──
         if raw_action.startswith("scan"):
-            parts = raw_action.replace("scan_", "scan ").split()
-            node = parts[1] if len(parts) > 1 else ""
+            # "scan_node_3" → strip "scan_" prefix → "node_3"
+            node = raw_action[len("scan_"):] if raw_action.startswith("scan_") else ""
             if node in NODES:
                 state["scanned_nodes"].add(node)
                 revealed = any(
@@ -546,8 +537,8 @@ def step(req: ActionRequest):
                     reward = -1.5
                     state["system_health"] = max(0, state["system_health"] - 10)
                 else:
-                    # Wrong action: -0.5 - health penalty component
-                    reward = -0.5 - (10 - min(state["system_health"], 10)) / 20.0
+                    # Wrong action: -0.5 scaled by remaining health fraction
+                    reward = -0.5 - (state["system_health"] / 100.0) * 0.5
                     state["system_health"] = max(0, state["system_health"] - 5)
 
             reason, confidence = _build_reason(raw_action, matched, matched_threat_type, early_bonus)
@@ -557,11 +548,12 @@ def step(req: ActionRequest):
         _update_visibility()
         _clamp_health()
 
+        # score = cumulative normalized reward, clamped to [0,1] each step
         state["score"] += reward
         _clamp_score()
         state["step"] += 1
 
-        if state["system_health"] <= 0 or state["step"] >= 50:
+        if state["system_health"] <= 0 or state["step"] >= current_task_config.get("max_steps", 50):
             state["done"] = True
 
         obs = _obs()
@@ -589,20 +581,20 @@ def step(req: ActionRequest):
         episode_actions_taken.append(raw_action)
         episode_rewards.append(reward)
         _MITIGATIONS = {"block_ip", "isolate_machine", "patch"}
-        if raw_action in _MITIGATIONS and reward < _clamp_reward(0.0):
+        # False positive: mitigation applied but no threat was matched (wrong action or no threat)
+        if raw_action in _MITIGATIONS and not matched:
             false_positive_actions += 1
         for threat in obs.get("visible_threats", []):
             tid = threat.get("id", "")
             if tid:
                 threats_detected_this_episode.add(tid)
-            if threat.get("stage") == "contained":
+        # Track containment directly from state["threats"] (visible_threats
+        # never includes contained threats, so checking stage=="contained" there
+        # is always False — fix: scan all threats for contained flag instead)
+        for t in state["threats"]:
+            if t.get("contained"):
+                tid = str(t.get("id", f"{t['type']}_{t['node']}"))
                 threats_contained_this_episode.add(tid)
-        # also mark threats contained via matched flag
-        if matched and matched_threat_type:
-            for t in state["threats"]:
-                if t.get("contained") and t.get("type") == matched_threat_type:
-                    tid = str(t.get("id", f"{t['type']}_{t['node']}"))
-                    threats_contained_this_episode.add(tid)
 
         # ── Red team: observe defender action ─────────────────────────────────
         translated = translate_action(raw_action)
@@ -828,20 +820,20 @@ def get_analytics():
         system_health = state["system_health"]
         scan_coverage = round(len(state["scanned_nodes"]) / TOTAL_NODES, 3)
 
-        n_detected  = max(1, len(threats_detected_this_episode))
+        n_detected  = len(threats_detected_this_episode)
         n_contained = len(threats_contained_this_episode)
 
-        mttd = round(total_steps / n_detected, 2)
+        # Avoid division by zero; return 0.0 rates when nothing detected yet
+        mttd = round(total_steps / max(1, n_detected), 2)
         mttr = round(total_steps / max(1, n_contained), 2)
 
         # Detection rate: detected / (detected + remaining hidden)
         hidden_count = TOTAL_NODES - len(state["scanned_nodes"])
         detection_rate = round(
-            len(threats_detected_this_episode) /
-            max(1, len(threats_detected_this_episode) + hidden_count), 3
+            n_detected / max(1, n_detected + hidden_count), 3
         )
 
-        containment_rate = round(n_contained / n_detected, 3)
+        containment_rate = round(n_contained / max(1, n_detected), 3) if n_detected > 0 else 0.0
 
         total_mitigations = sum(
             1 for a in episode_actions_taken
@@ -947,7 +939,9 @@ def get_analytics():
 
 def main():
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    # Port 7860 matches openenv.yaml docker.port and Dockerfile EXPOSE
+    port = int(_os.getenv("PORT", "7860"))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
 
 
 if __name__ == "__main__":

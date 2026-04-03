@@ -191,18 +191,18 @@ class CyberDefenseEnv:
             self._env_state = self._env.reset(seed=self._seed)
 
         action_input = _to_action_input(action, self._env_state)
+        prev_active = len(self._env_state.active_threats)
         next_env_state, reward, done, info = self._env.step(action_input)
 
         self._env_state = next_env_state
         self._done      = done
 
-        # Track containment across steps
-        newly_contained = sum(
-            1 for t in next_env_state.active_threats if t.is_contained
-        )
-        self._threats_contained = max(self._threats_contained, newly_contained)
-        self._threats_seen = max(self._threats_seen,
-                                 len(next_env_state.active_threats))
+        # Track containment: active_threats only holds non-contained threats
+        # (env._build_state filters them). Threats that disappeared = contained.
+        threats_now_active = len(next_env_state.active_threats)
+        contained_this_step = max(0, prev_active - threats_now_active)
+        self._threats_contained += contained_this_step
+        self._threats_seen = max(self._threats_seen, threats_now_active)
 
         obs = _state_to_obs(next_env_state)
 

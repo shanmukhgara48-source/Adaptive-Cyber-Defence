@@ -25,17 +25,19 @@ def test_compliance():
         with open(yaml_path) as f:
             spec = yaml.safe_load(f)
         required = ["name", "version", "description", "tasks",
-                    "observation_space", "action_space", "reward"]
+                    "observation", "action", "reward"]
         for field in required:
             if field not in spec:
                 errors.append(f"openenv.yaml missing field: {field}")
-        tasks = spec.get("tasks", [])
-        if len(tasks) < 3:
-            errors.append(f"Need 3+ tasks, found {len(tasks)}")
-        for t in tasks:
+        # tasks is a dict {name: config} in openenv.yaml
+        tasks = spec.get("tasks", {})
+        task_list = list(tasks.values()) if isinstance(tasks, dict) else tasks
+        if len(task_list) < 3:
+            errors.append(f"Need 3+ tasks, found {len(task_list)}")
+        for t in task_list:
             score = t.get("passing_score", 0)
             if not (0.0 <= score <= 1.0):
-                errors.append(f"Task {t.get('id')} passing_score out of range")
+                errors.append(f"Task {t.get('name', '?')} passing_score out of range")
         print(f"[{'PASS' if not [e for e in errors if 'openenv' in e.lower() or 'task' in e.lower()] else 'FAIL'}] openenv.yaml structure")
     except ImportError:
         # yaml not installed — try basic check

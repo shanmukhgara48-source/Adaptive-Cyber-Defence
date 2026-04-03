@@ -188,9 +188,9 @@ class BaselineAgent:
         )
         if early_threats:
             target = early_threats[0].current_node
-            if resources > 0.10:
-                return ActionInput(action=Action.BLOCK_IP, target_node=target)
             if resources > 0.15:
                 return ActionInput(action=Action.RUN_DEEP_SCAN, target_node=target)
+            if resources > 0.10:
+                return ActionInput(action=Action.BLOCK_IP, target_node=target)
 
         return ActionInput(action=Action.IGNORE)

@@ -250,31 +250,28 @@ VALID ACTIONS (output EXACTLY one of these):
 
 OUTPUT ONLY THE ACTION. One word. No explanation."""
 
-    for model in MODELS:
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=10,
-                    temperature=TEMPERATURE,
-                )
-                raw    = response.choices[0].message.content.strip().lower()
-                action = raw.split()[0].strip(".,!?:") if raw else "ignore"
-                if action not in VALID_ACTIONS:
-                    print(f"[model] invalid '{action}' → fallback to intel recommendation")
-                    # Use threat-intel recommendation as secondary fallback
-                    action = recommended_next if recommended_next in VALID_ACTIONS else "ignore"
-                return action
-            except Exception as e:
-                print(f"[model] {model} attempt {attempt}/{MAX_RETRIES} failed: {e}")
-                if attempt < MAX_RETRIES:
-                    time.sleep(RETRY_DELAY)
-
-        print(f"[model] {model} exhausted retries")
+    model = MODEL_NAME  # single model; MODELS list kept for future expansion
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=10,
+                temperature=TEMPERATURE,
+            )
+            raw    = response.choices[0].message.content.strip().lower()
+            action = raw.split()[0].strip(".,!?:") if raw else "ignore"
+            if action not in VALID_ACTIONS:
+                print(f"[model] invalid '{action}' → fallback to intel recommendation")
+                action = recommended_next if recommended_next in VALID_ACTIONS else "ignore"
+            return action
+        except Exception as e:
+            print(f"[model] attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
 
     # Final fallback: deterministic (no LLM)
-    print("[model] all models failed — using deterministic fallback")
+    print("[model] exhausted retries — using deterministic fallback")
     return deterministic_action(enriched, scanned_nodes, step_num) or "ignore"
 
 
