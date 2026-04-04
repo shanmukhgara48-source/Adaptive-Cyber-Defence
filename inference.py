@@ -31,12 +31,21 @@ VALID_ACTIONS = [
 ]
 
 TEMPERATURE = 0.0
-MAX_STEPS   = 20
 MAX_RETRIES = 3
 RETRY_DELAY = 2  # seconds between retries
 
-MODELS = ["meta-llama/Meta-Llama-3-8B-Instruct"]
-TASKS  = ["easy", "medium", "hard", "nightmare"]
+TASKS = ["easy", "medium", "hard", "nightmare", "elite", "impossible"]
+
+# Per-task step limits matching task Python configs exactly
+# easy=30, medium=50, hard=30, nightmare=15, elite=15, impossible=10
+TASK_MAX_STEPS: dict[str, int] = {
+    "easy":       30,
+    "medium":     50,
+    "hard":       30,
+    "nightmare":  15,
+    "elite":      15,
+    "impossible": 10,
+}
 
 # MITRE → correct action lookup (used for deterministic fallback)
 MITRE_ACTION = {
@@ -56,12 +65,13 @@ MITRE_ACTION = {
 # Observation enrichment
 # ---------------------------------------------------------------------------
 
-def get_enriched_observation(base_url: str, obs: dict) -> dict:
+def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> dict:
     """Fetch /threat-intel and /analytics to enrich the observation."""
     enriched = dict(obs)
+    params = {"session_id": session_id} if session_id else {}
 
     try:
-        intel = requests.get(f"{base_url}/threat-intel", timeout=5).json()
+        intel = requests.get(f"{base_url}/threat-intel", params=params, timeout=5).json()
         enriched["threat_intel"]         = intel.get("active_campaigns", [])
         enriched["recommended_actions"]  = intel.get("recommended_actions", [])
         enriched["risk_level"]           = intel.get("risk_level", "UNKNOWN")
@@ -71,16 +81,18 @@ def get_enriched_observation(base_url: str, obs: dict) -> dict:
         enriched["risk_level"]           = "UNKNOWN"
 
     try:
-        analytics = requests.get(f"{base_url}/analytics", timeout=5).json()
-        enriched["performance_grade"] = analytics.get("performance_grade", "?")
-        enriched["recommended_next"]  = analytics.get("recommended_next_action", "ignore")
-        enriched["containment_rate"]  = (
+        analytics = requests.get(f"{base_url}/analytics", params=params, timeout=5).json()
+        enriched["performance_grade"]    = analytics.get("performance_grade", "?")
+        enriched["recommended_next"]     = analytics.get("recommended_next_action", "ignore")
+        enriched["containment_rate"]     = (
             analytics.get("soc_metrics", {}).get("containment_rate", 0.0)
         )
+        enriched["resources_remaining"]  = analytics.get("resources_remaining", 0.5)
     except Exception:
-        enriched["performance_grade"] = "?"
-        enriched["recommended_next"]  = "ignore"
-        enriched["containment_rate"]  = 0.0
+        enriched["performance_grade"]    = "?"
+        enriched["recommended_next"]     = "ignore"
+        enriched["containment_rate"]     = 0.0
+        enriched["resources_remaining"]  = 0.5
 
     return enriched
 
@@ -109,7 +121,7 @@ def deterministic_action(
 
     # ── 2. CRITICAL severity threats — use MITRE lookup ───────────────────────
     for t in threats:
-        if t.get("severity") == "CRITICAL":
+        if float(t.get("severity", 0)) > 0.7:
             action = (
                 MITRE_ACTION.get(t.get("type", ""))
                 or MITRE_ACTION.get(t.get("technique_id", ""))
@@ -130,12 +142,10 @@ def deterministic_action(
     if not threats and unscanned:
         return f"scan_node_{unscanned[0].split('_')[1]}"
 
-    # ── 5. All nodes scanned, no threats — cycle scans (0.497 >> ignore 0.125) ─
-    # Re-scanning gives -0.01 raw → 0.497 normalized.
-    # ignore gives -1.5 raw → 0.125 normalized. Cycling scans is always better.
+    # ── 5. All nodes scanned, no threats — ignore (empty rescan is penalized) ──
+    # Server penalizes empty rescans at 0.425; ignore is neutral when no threats exist.
     if not threats:
-        node_idx = (step_num % 5) + 1
-        return f"scan_node_{node_idx}"
+        return "ignore"
 
     # Threats visible but type/technique unknown — let LLM decide
     return None
@@ -152,6 +162,7 @@ def choose_action(
     last_reward: float,
     scanned_nodes: set,
     base_url: str,
+    session_id: str = "",
 ) -> str:
     """Enrich obs, try deterministic path first, then ask LLM."""
 
@@ -170,7 +181,7 @@ def choose_action(
             print(f"[speed] young {threat_type} age={youngest.get('age')} → {immediate} (speed bonus)")
             return immediate
 
-    enriched      = get_enriched_observation(base_url, obs)
+    enriched      = get_enriched_observation(base_url, obs, session_id)
     threats       = enriched.get("visible_threats", [])
     coverage      = enriched.get("scan_coverage", 0.0)
     system_health = enriched.get("system_health", 100)
@@ -213,7 +224,7 @@ def choose_action(
 
     prompt = f"""You are an expert SOC analyst. Choose ONE action RIGHT NOW.
 
-SITUATION (Step {step_num}/{MAX_STEPS}):
+SITUATION (Step {step_num}):
   Health: {system_health}/100  |  Risk: {risk_level}  |  Grade: {grade}
   Scan coverage: {coverage:.0%}  |  Containment rate: {containment_rate:.0%}
   Scanned nodes: {sorted(scanned_nodes) or 'none'}
@@ -296,7 +307,9 @@ def run_task(task_name: str) -> dict:
             "total_reward": 0.0, "score": 0.0, "status": "reset_failed",
         }
 
-    task_id = reset_data.get("task_id", task_name)
+    session_id = reset_data.get("session_id", "")
+    if not session_id:
+        print(f"[warn] /reset did not return session_id for task '{task_name}'")
 
     total_reward  = 0.0
     final_status  = "in_progress"
@@ -308,9 +321,11 @@ def run_task(task_name: str) -> dict:
     print(f"{'Step':<6} {'Action':<22} {'Reward':<8} {'Reason'}")
     print("-" * 70)
 
-    for step_num in range(1, MAX_STEPS + 1):
+    max_steps = TASK_MAX_STEPS.get(task_name, 30)
+    for step_num in range(1, max_steps + 1):
         try:
-            obs = requests.get(f"{BASE_URL}/state").json()
+            obs = requests.get(f"{BASE_URL}/state",
+                               params={"session_id": session_id}).json()
         except Exception as e:
             print(f"[error] /state failed at step {step_num}: {e}")
             final_status = "error"
@@ -322,7 +337,7 @@ def run_task(task_name: str) -> dict:
 
         action = choose_action(
             obs, step_num, last_action, last_reward,
-            scanned_nodes, BASE_URL,
+            scanned_nodes, BASE_URL, session_id,
         )
 
         if action.startswith("scan_node_"):
@@ -330,7 +345,8 @@ def run_task(task_name: str) -> dict:
             scanned_nodes.add(node_id)
 
         try:
-            data = requests.post(f"{BASE_URL}/step", json={"action": action}).json()
+            data = requests.post(f"{BASE_URL}/step",
+                                 json={"action": action, "session_id": session_id}).json()
         except Exception as e:
             print(f"[error] /step failed at step {step_num}: {e}")
             final_status = "error"
@@ -353,24 +369,21 @@ def run_task(task_name: str) -> dict:
     # ── Grader formula (mirrors tasks/base.py _compute_episode_score) ──────────
     # score = 0.50×containment_rate + 0.20×critical_health
     #       + 0.15×resources_remaining + 0.15×avg_step_reward
-    # Raw total_reward/MAX_STEPS is wrong: harder tasks spawn more threats, so
-    # more correct actions accumulate, making hard > easy. The grader formula
-    # uses containment_rate as 50% weight, which naturally decreases with
-    # difficulty (more threats → harder to contain all → lower rate).
     try:
-        analytics = requests.get(f"{BASE_URL}/analytics", timeout=5).json()
+        analytics = requests.get(f"{BASE_URL}/analytics",
+                                 params={"session_id": session_id}, timeout=5).json()
         soc = analytics.get("soc_metrics", {})
         net = analytics.get("network_status", {})
         containment_rate    = float(soc.get("containment_rate", 0.0))
         critical_health     = float(net.get("system_health", 0)) / 100.0
         avg_step_reward     = float(soc.get("avg_reward_per_step",
                                             total_reward / max(1, step_num)))
-        resources_remaining = 1.0  # not exposed by HTTP API; use full budget
+        resources_remaining = float(analytics.get("resources_remaining", 0.5))
     except Exception:
         containment_rate    = 0.0
         critical_health     = 0.0
         avg_step_reward     = total_reward / max(1, step_num)
-        resources_remaining = 1.0
+        resources_remaining = 0.0  # conservative: don't inflate score on analytics failure
 
     score = max(0.0, min(1.0,
         0.50 * containment_rate
@@ -380,7 +393,7 @@ def run_task(task_name: str) -> dict:
     ))
 
     return {
-        "task_id":           task_id,
+        "task_id":           task_name,
         "steps":             step_num,
         "total_reward":      round(total_reward, 3),
         "containment_rate":  round(containment_rate, 3),
@@ -395,6 +408,17 @@ def run_task(task_name: str) -> dict:
 # Main: run all tasks sequentially and print summary
 # ---------------------------------------------------------------------------
 
+# Per-task passing thresholds matching task Python configs
+TASK_THRESHOLDS: dict[str, float] = {
+    "easy":       0.55,
+    "medium":     0.55,
+    "hard":       0.45,
+    "nightmare":  0.25,
+    "elite":      0.20,
+    "impossible": 0.10,
+}
+
+
 def run():
     results = []
 
@@ -405,26 +429,29 @@ def run():
     sep  = "=" * 80
     dash = "-" * 80
     print(f"\n{sep}")
-    print("BASELINE RESULTS  (grader formula: 0.50×contain + 0.20×health + 0.15×res + 0.15×avg_r)")
+    print("BASELINE RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×res + 0.15×avg_r)")
     print(sep)
-    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'AvgRew':<9} {'Score':<8} {'Status'}")
+    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'AvgRew':<9} {'Score':<8} {'Threshold':<11} {'Result'}")
     print(dash)
     scores = []
     for task_name, r in results:
-        scores.append(r['score'])
+        threshold = TASK_THRESHOLDS.get(task_name, 0.50)
+        result_label = "PASS ✓" if r["score"] >= threshold else "FAIL ✗"
+        scores.append(r["score"])
         print(
             f"{task_name:<12} {r['steps']:<7} "
             f"{r['containment_rate']:<10.3f} {r['critical_health']:<10.3f} "
-            f"{r['avg_step_reward']:<9.3f} {r['score']:<8.3f} {r['status']}"
+            f"{r['avg_step_reward']:<9.3f} {r['score']:<8.3f} {threshold:<11.2f} {result_label}"
         )
     print(dash)
 
-    # Monotone-decreasing check
-    decreasing = all(scores[i] >= scores[i+1] for i in range(len(scores)-1))
+    decreasing = all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
+    passes = sum(
+        1 for (task_name, r) in results
+        if r["score"] >= TASK_THRESHOLDS.get(task_name, 0.50)
+    )
     print(f"\nScores decrease with difficulty: {'YES ✓' if decreasing else 'NO ✗'}")
-    for (task_name, r), threshold in zip(results, [0.55, 0.55, 0.45, 0.25]):
-        status = "PASS ✓" if r['score'] >= threshold else "FAIL ✗"
-        print(f"  {task_name:<12} score={r['score']:.3f}  threshold={threshold}  {status}")
+    print(f"Tasks passed: {passes}/{len(results)}")
     print(sep)
 
 

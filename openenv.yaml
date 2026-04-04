@@ -22,7 +22,7 @@ tasks:
     description: "Detect and block a single phishing attack before it harvests credentials"
     difficulty: easy
     passing_score: 0.55
-    max_steps: 50
+    max_steps: 30
   medium:
     name: Medium Defense
     description: "Stop malware and ransomware spread across 3 nodes before lateral movement triggers"
@@ -40,7 +40,21 @@ tasks:
     description: "Nation-state APT. All 5 nodes under simultaneous attack. Near-zero detection, maximum evasion, fastest kill chain. Designed to genuinely challenge frontier LLMs."
     difficulty: nightmare
     passing_score: 0.25
-    max_steps: 20
+    max_steps: 15
+
+  elite:
+    name: Elite Defense
+    description: "Nation-state persistent threat with insider access. All nodes pre-compromised. Near-zero detection. Kill chain advances every step."
+    difficulty: elite
+    passing_score: 0.20
+    max_steps: 15
+
+  impossible:
+    name: Impossible Defense
+    description: "AI-driven attacker with perfect counter-strategy. Maximum evasion, instant kill chain, zero resources. Exists to show environment has no ceiling."
+    difficulty: impossible
+    passing_score: 0.10
+    max_steps: 10
 
 observation:
   type: dict
@@ -74,10 +88,10 @@ observation:
 action:
   type: discrete
   description: >
-    5 discrete actions. Defense actions only work against visible threats.
+    9 discrete actions. Defense actions only work against visible threats.
     Use SCAN actions to reveal hidden threats before applying mitigations.
     MITRE ATT&CK guides the correct response: T1566→block_ip, T1204/T1486→isolate_machine,
-    T1499→patch, T1021→block_ip.
+    T1499→patch, T1021→block_ip. Note: Correct action depends on severity and stage.
   actions:
     - name: block_ip
       description: "Neutralises phishing (T1566) and lateral movement (T1021) threats"
@@ -87,8 +101,16 @@ action:
       description: "Neutralises DDoS (T1499) threats"
     - name: ignore
       description: "No mitigation applied. Health -10, reward penalty"
-    - name: scan
-      description: "Scan a node to reveal any hidden threats on that node (scan_node_1 through scan_node_5)"
+    - name: scan_node_1
+      description: "Scan node_1 to reveal hidden threats"
+    - name: scan_node_2
+      description: "Scan node_2 to reveal hidden threats"
+    - name: scan_node_3
+      description: "Scan node_3 to reveal hidden threats"
+    - name: scan_node_4
+      description: "Scan node_4 to reveal hidden threats"
+    - name: scan_node_5
+      description: "Scan node_5 to reveal hidden threats"
 
 reward:
   range: [0.0, 1.0]

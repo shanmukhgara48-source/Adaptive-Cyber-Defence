@@ -46,12 +46,14 @@ class TestOpenEnvYaml:
         assert "medium" in tasks
         assert "hard" in tasks
 
-    def test_five_actions_documented(self):
+    def test_nine_actions_documented(self):
         yaml = pytest.importorskip("yaml")
         with open(ROOT / "openenv.yaml") as f:
             doc = yaml.safe_load(f)
         actions = doc["action"]["actions"]
-        assert len(actions) == 5
+        # 4 defense actions (block_ip, isolate_machine, patch, ignore)
+        # + 5 scan_node_X actions = 9 total
+        assert len(actions) == 9
 
     def test_network_has_five_nodes(self):
         yaml = pytest.importorskip("yaml")
