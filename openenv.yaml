@@ -19,15 +19,15 @@ api:
 tasks:
   easy:
     name: Easy Defense
-    description: "Detect and block a single phishing attack before it harvests credentials"
+    description: "Three simultaneous attacks on workstations. High detection probability, generous resources, slow progression. Goal: contain all threats before lateral spread."
     difficulty: easy
-    passing_score: 0.55
+    passing_score: 0.50
     max_steps: 30
   medium:
     name: Medium Defense
-    description: "Stop malware and ransomware spread across 3 nodes before lateral movement triggers"
+    description: "Two simultaneous intrusions with limited SOC resources. Moderate detection, false-positive noise. Requires threat prioritisation."
     difficulty: medium
-    passing_score: 0.55
+    passing_score: 0.60
     max_steps: 50
   hard:
     name: Hard Defense
@@ -62,10 +62,13 @@ observation:
     Partially observable environment. Threats are hidden on network nodes and must be
     discovered via SCAN actions or by waiting for natural aging (age >= 5) or stage
     escalation (lateral_movement). The agent sees only scanned or escalated threats.
+    Threats retain their original type throughout the episode. Stage escalation
+    (initial → lateral_movement) changes visibility but does NOT change the correct
+    mitigation action — apply the MITRE response for the original threat type.
   fields:
     - name: visible_threats
       type: list
-      description: "Threats currently visible to the agent. Each entry includes type, node, stage, age, and MITRE ATT&CK technique ID. Hidden threats are not included."
+      description: "Threats currently visible to the agent. Each entry includes type (original), node, stage (current), age, escalated (bool), and MITRE ATT&CK technique ID. Hidden threats are not included."
     - name: hidden_node_count
       type: int
       description: "Number of nodes not yet scanned by the agent (0–5)"
@@ -125,7 +128,7 @@ reward:
 termination:
   conditions:
     - system_health <= 0
-    - step >= max_steps  # per-task: easy=30, medium=50, hard=30, nightmare=20
+    - step >= max_steps  # per-task: easy=30, medium=50, hard=30, nightmare=15, elite=15, impossible=10
 
 network:
   nodes: 5

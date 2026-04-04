@@ -114,16 +114,21 @@ def deterministic_action(
     all_nodes     = [f"node_{i}" for i in range(1, 6)]
     unscanned     = [n for n in all_nodes if n not in scanned_nodes]
 
-    # ── 1. lateral_movement → block_ip immediately (spreads fast) ─────────────
+    # ── 1. Stage-escalated threats: use original_type for correct MITRE action ──
+    # Threats retain original_type even after escalating to lateral_movement stage.
+    # Always prefer original_type so the MITRE mapping remains correct throughout.
     for t in threats:
-        if t.get("type") == "lateral_movement" or t.get("stage") == "lateral_movement":
-            return "block_ip"
+        if t.get("stage") == "lateral_movement" or t.get("escalated"):
+            orig = t.get("original_type", t.get("type", ""))
+            action = MITRE_ACTION.get(orig) or MITRE_ACTION.get(t.get("technique_id", ""))
+            return action or "block_ip"  # default block_ip if original type unknown
 
-    # ── 2. CRITICAL severity threats — use MITRE lookup ───────────────────────
+    # ── 2. CRITICAL severity threats — MITRE lookup on original_type ──────────
     for t in threats:
         if float(t.get("severity", 0)) > 0.7:
+            orig = t.get("original_type", t.get("type", ""))
             action = (
-                MITRE_ACTION.get(t.get("type", ""))
+                MITRE_ACTION.get(orig)
                 or MITRE_ACTION.get(t.get("technique_id", ""))
             )
             if action:
@@ -131,8 +136,9 @@ def deterministic_action(
 
     # ── 3. Any visible threat with known type — MITRE lookup ──────────────────
     for t in threats:
+        orig = t.get("original_type", t.get("type", ""))
         action = (
-            MITRE_ACTION.get(t.get("type", ""))
+            MITRE_ACTION.get(orig)
             or MITRE_ACTION.get(t.get("technique_id", ""))
         )
         if action:
@@ -142,8 +148,9 @@ def deterministic_action(
     if not threats and unscanned:
         return f"scan_node_{unscanned[0].split('_')[1]}"
 
-    # ── 5. All nodes scanned, no threats — ignore (empty rescan is penalized) ──
-    # Server penalizes empty rescans at 0.425; ignore is neutral when no threats exist.
+    # ── 5. All nodes scanned, no threats — ignore
+    # Empty rescans give 0.425 reward which is suboptimal vs correct mitigation at 0.75.
+    # Only ignore when there is genuinely nothing left to do.
     if not threats:
         return "ignore"
 
@@ -243,11 +250,15 @@ MITRE ATT&CK RESPONSE — follow EXACTLY, these give +1.0 reward:
   Wrong action             →  -0.5 penalty
   ignore                   →  -1.5 penalty
 
+NOTE: Threats retain their ORIGINAL type even after stage escalation.
+  If stage=lateral_movement but original_type=ransomware → use isolate_machine (not block_ip).
+  Always match the MITRE action to the threat's original_type field.
+
 PRIORITY ORDER (strict):
-  1. lateral_movement threat visible  →  block_ip  (spreads to other nodes!)
-  2. CRITICAL severity threat visible →  use MITRE action above
-  3. HIGH severity threat visible     →  use MITRE action above
-  4. Any threat visible with known type → use MITRE action above
+  1. Escalated or stage=lateral_movement threat → use MITRE action for original_type
+  2. CRITICAL severity threat visible →  use MITRE action for original_type
+  3. HIGH severity threat visible     →  use MITRE action for original_type
+  4. Any threat visible with known type → use MITRE action for original_type
   5. Unscanned nodes remain           →  {next_scan}
   6. All nodes clean                  →  ignore
 
@@ -366,41 +377,48 @@ def run_task(task_name: str) -> dict:
     else:
         final_status = "max_steps_reached"
 
-    # ── Grader formula (mirrors tasks/base.py _compute_episode_score) ──────────
-    # score = 0.50×containment_rate + 0.20×critical_health
-    #       + 0.15×resources_remaining + 0.15×avg_step_reward
+    # ── Grader formula — EXACT match to tasks/base.py _compute_episode_score ────
+    # score = 0.50 × containment_rate   (fraction of threats contained)
+    #       + 0.20 × critical_health    (critical asset health at end, [0,1])
+    #       + 0.15 × avg_resource_left  (avg fraction of step budget unused)
+    #       + 0.15 × avg_reward         (avg per-step reward, [0,1])
     try:
         analytics = requests.get(f"{BASE_URL}/analytics",
                                  params={"session_id": session_id}, timeout=5).json()
         soc = analytics.get("soc_metrics", {})
         net = analytics.get("network_status", {})
-        containment_rate    = float(soc.get("containment_rate", 0.0))
-        critical_health     = float(net.get("system_health", 0)) / 100.0
-        avg_step_reward     = float(soc.get("avg_reward_per_step",
-                                            total_reward / max(1, step_num)))
-        resources_remaining = float(analytics.get("resources_remaining", 0.5))
+        # containment_rate: threats contained / threats detected (matches base.py)
+        containment_rate  = float(soc.get("containment_rate", 0.0))
+        # critical_health: system_health [0,100] → [0,1] (matches base.py survival_rate)
+        critical_health   = float(net.get("system_health", 0)) / 100.0
+        # avg_resource_left: fraction of per-step budget unused (matches base.py)
+        avg_resource_left = float(analytics.get("resources_remaining", 0.0))
+        # avg_reward: mean per-step reward (matches base.py avg_step_reward weight)
+        avg_reward        = float(soc.get("avg_reward_per_step",
+                                          total_reward / max(1, step_num)))
     except Exception:
-        containment_rate    = 0.0
-        critical_health     = 0.0
-        avg_step_reward     = total_reward / max(1, step_num)
-        resources_remaining = 0.0  # conservative: don't inflate score on analytics failure
+        containment_rate  = 0.0
+        critical_health   = 0.0
+        avg_resource_left = 0.0  # conservative: don't inflate on analytics failure
+        avg_reward        = total_reward / max(1, step_num)
 
     score = max(0.0, min(1.0,
         0.50 * containment_rate
         + 0.20 * critical_health
-        + 0.15 * resources_remaining
-        + 0.15 * avg_step_reward
+        + 0.15 * avg_resource_left
+        + 0.15 * avg_reward
     ))
 
     return {
-        "task_id":           task_name,
-        "steps":             step_num,
-        "total_reward":      round(total_reward, 3),
-        "containment_rate":  round(containment_rate, 3),
-        "critical_health":   round(critical_health, 3),
-        "avg_step_reward":   round(avg_step_reward, 3),
-        "score":             round(score, 3),
-        "status":            final_status,
+        "task_id":          task_name,
+        "steps":            step_num,
+        "total_reward":     round(total_reward, 3),
+        "containment_rate": round(containment_rate, 3),
+        "critical_health":  round(critical_health, 3),
+        "avg_resource_left": round(avg_resource_left, 3),
+        "avg_reward":       round(avg_reward, 3),
+        "score":            round(score, 3),
+        "status":           final_status,
     }
 
 
@@ -410,8 +428,8 @@ def run_task(task_name: str) -> dict:
 
 # Per-task passing thresholds matching task Python configs
 TASK_THRESHOLDS: dict[str, float] = {
-    "easy":       0.55,
-    "medium":     0.55,
+    "easy":       0.50,
+    "medium":     0.60,
     "hard":       0.45,
     "nightmare":  0.25,
     "elite":      0.20,
@@ -429,7 +447,7 @@ def run():
     sep  = "=" * 80
     dash = "-" * 80
     print(f"\n{sep}")
-    print("BASELINE RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×res + 0.15×avg_r)")
+    print("BASELINE RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×resource + 0.15×avg_reward)")
     print(sep)
     print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'AvgRew':<9} {'Score':<8} {'Threshold':<11} {'Result'}")
     print(dash)
@@ -441,7 +459,7 @@ def run():
         print(
             f"{task_name:<12} {r['steps']:<7} "
             f"{r['containment_rate']:<10.3f} {r['critical_health']:<10.3f} "
-            f"{r['avg_step_reward']:<9.3f} {r['score']:<8.3f} {threshold:<11.2f} {result_label}"
+            f"{r['avg_reward']:<9.3f} {r['score']:<8.3f} {threshold:<11.2f} {result_label}"
         )
     print(dash)
 

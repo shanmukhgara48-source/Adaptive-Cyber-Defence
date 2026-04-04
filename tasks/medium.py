@@ -35,5 +35,5 @@ class MediumTask(BaseTask):
         false_positive_rate=0.12,       # moderate alert noise
         false_negative_rate=0.30,
         base_detection_prob=0.45,
-        passing_score=0.55,
+        passing_score=0.60,
     )

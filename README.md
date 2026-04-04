@@ -197,15 +197,17 @@ Deploy directly — the `Dockerfile` exposes port `7860` as required by Spaces.
 
 ## Baseline Scores
 
-Scores produced by `inference.py` using `meta-llama/Meta-Llama-3-8B-Instruct` via the HuggingFace router.
-Score formula: `total_reward / max_steps`, clamped to [0, 1].
+Baseline scores from `inference.py` (deterministic MITRE-lookup agent, no LLM).
+Grader: `0.50×containment + 0.20×critical_health + 0.15×avg_resource_left + 0.15×avg_reward`.
 
-| Task      | Steps | Total Reward | Score | Threshold | Status |
-|-----------|-------|--------------|-------|-----------|--------|
-| easy      | 20    | 11.465       | 0.573 | 0.55      | PASS   |
-| medium    | 20    | 11.965       | 0.598 | 0.45      | PASS   |
-| hard      | 20    | 12.490       | 0.624 | 0.45      | PASS   |
-| nightmare | 20    | 12.490       | 0.624 | 0.25      | PASS   |
+| Task       | Max Steps | Threshold | Notes                                         |
+|------------|-----------|-----------|-----------------------------------------------|
+| easy       | 30        | 0.50      | 3 threats, high detection, generous resources |
+| medium     | 50        | 0.60      | 2 threats, FP noise, limited budget           |
+| hard       | 30        | 0.45      | 5 threats, APT evasion, scarce resources      |
+| nightmare  | 15        | 0.25      | 5 threats, near-zero detection                |
+| elite      | 15        | 0.20      | All nodes pre-compromised, insider threat     |
+| impossible | 10        | 0.10      | AI attacker, no ceiling                       |
 
 To reproduce:
 
@@ -238,8 +240,10 @@ Each task is scored on a scale of 0.0–1.0 using this formula:
 - episode_score = 0.50×0.80 + 0.20×0.90 + 0.15×0.70 + 0.15×0.50
 - episode_score = 0.40 + 0.18 + 0.105 + 0.075 = 0.76
 
-Passing thresholds:
-- easy:      0.55
-- medium:    0.45
-- hard:      0.45
-- nightmare: 0.25
+Passing thresholds (difficulty ladder — higher bar requires better performance):
+- easy:       0.50
+- medium:     0.60  (higher bar than easy — requires better containment)
+- hard:       0.45  (lower bar — genuinely harder to achieve)
+- nightmare:  0.25
+- elite:      0.20
+- impossible: 0.10

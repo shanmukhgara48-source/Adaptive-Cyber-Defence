@@ -7,34 +7,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
-from models import Observation, ActionRequest, Reward
+from models import Observation
 import importlib.util as _ilu, sys as _sys, os as _os
 
-# ─── REWARD ENGINE IMPORTS ────────────────────────────────────────────────────
-# Import the canonical reward function and the dataclasses it requires.
-# We build thin adapter objects from app.py's dict state so the same
-# RewardFunction used by the Python env is called by the HTTP API too.
-from adaptive_cyber_defense.engines.reward import RewardFunction, RewardWeights
-from adaptive_cyber_defense.engines.attack import LateralMovementEvent
-from adaptive_cyber_defense.engines.detection import DetectionEvent
-from adaptive_cyber_defense.engines.response import ActionResult
-from adaptive_cyber_defense.engines.scoring import ThreatScore
-from adaptive_cyber_defense.models.action import Action as _Action
-from adaptive_cyber_defense.models.state import (
-    AttackStage, EnvironmentState, NetworkAsset, AssetType, ResourcePool, Threat,
-)
-from adaptive_cyber_defense.models.network import NetworkGraph
-
-# Map HTTP API action strings → internal Action enum for ActionResult construction
-_STR_TO_ACTION: dict[str, _Action] = {
-    "block_ip":        _Action.BLOCK_IP,
-    "isolate_machine": _Action.ISOLATE_NODE,
-    "patch":           _Action.PATCH_SYSTEM,
-    "ignore":          _Action.IGNORE,
-}
-
-# Singleton reward function (weights shared across requests — stateless)
-_reward_fn = RewardFunction(RewardWeights())
 
 # ─── TASK CONFIG IMPORTS ──────────────────────────────────────────────────────
 from tasks.easy import EasyTask
@@ -147,230 +122,14 @@ TECHNIQUE_DEFAULTS = {
 }
 
 TASKS = [
-    {"id": 1, "difficulty": "easy",      "goal": "Detect and block a phishing attack before it harvests credentials"},
-    {"id": 2, "difficulty": "medium",    "goal": "Stop malware spread before it reaches lateral movement stage"},
-    {"id": 3, "difficulty": "hard",      "goal": "Handle multi-stage attacks across multiple nodes simultaneously"},
-    {"id": 4, "difficulty": "nightmare", "goal": "Defend against multiple hidden threats under limited visibility and no scan budget"},
+    {"id": 1, "difficulty": "easy",       "passing_score": 0.50, "goal": "Three simultaneous attacks. High detection, generous resources. Contain all before lateral spread."},
+    {"id": 2, "difficulty": "medium",     "passing_score": 0.60, "goal": "Two intrusions with limited resources, FP noise. Prioritise threats."},
+    {"id": 3, "difficulty": "hard",       "passing_score": 0.45, "goal": "APT across 5 nodes. Low detection, scarce resources, fast progression."},
+    {"id": 4, "difficulty": "nightmare",  "passing_score": 0.25, "goal": "Nation-state APT. Near-zero detection, 15 steps. Designed for frontier LLMs."},
+    {"id": 5, "difficulty": "elite",      "passing_score": 0.20, "goal": "Persistent threat with insider access. All nodes pre-compromised. Kill chain advances every step."},
+    {"id": 6, "difficulty": "impossible", "passing_score": 0.10, "goal": "AI-driven attacker with perfect counter-strategy. Exists to show environment has no ceiling."},
 ]
 
-# Node criticality config — matches openenv.yaml network.assets
-_NODE_CRITICALITY = {
-    "node_1": 0.3, "node_2": 0.3, "node_3": 0.7,
-    "node_4": 0.7, "node_5": 0.9,
-}
-# Threat type → AttackStage mapping for adapters
-_TYPE_TO_STAGE = {
-    "phishing":         AttackStage.PHISHING,
-    "malware":          AttackStage.MALWARE_INSTALL,
-    "ransomware":       AttackStage.MALWARE_INSTALL,
-    "ddos":             AttackStage.EXFILTRATION,
-    "lateral_movement": AttackStage.LATERAL_SPREAD,
-}
-
-
-def _build_env_state(snap: dict, step_health: int, task_config: dict) -> EnvironmentState:
-    """
-    Convert app.py's dict state into an EnvironmentState adapter for RewardFunction.
-    Only populates fields that RewardFunction.compute() actually reads.
-    task_config is passed explicitly (never read from module global) for thread safety.
-    """
-    # Build NetworkAsset objects for each node
-    assets: dict[str, NetworkAsset] = {}
-    for node in NODES:
-        crit = _NODE_CRITICALITY.get(node, 0.5)
-        # health [0,100] → [0,1]; mark compromised if any uncontained threat is on this node
-        has_threat = any(
-            t["node"] == node and not t.get("contained")
-            for t in snap["threats"]
-        )
-        assets[node] = NetworkAsset(
-            id=node,
-            asset_type=AssetType.SERVER,
-            health=step_health / 100.0,
-            is_compromised=has_threat,
-            is_isolated=False,
-            patch_level=0.8,
-            criticality=crit,
-        )
-
-    active = [t for t in snap["threats"] if not t.get("contained")]
-    threat_objects: list[Threat] = []
-    for t in active:
-        stage = _TYPE_TO_STAGE.get(t.get("type", "phishing"), AttackStage.PHISHING)
-        sev = float(t.get("severity", 0.6))
-        threat_objects.append(Threat(
-            id=t.get("id", f"{t['type']}_{t['node']}"),
-            stage=stage,
-            origin_node=t["node"],
-            current_node=t["node"],
-            severity=sev,
-            detection_confidence=1.0 if t.get("visible") else 0.0,
-            is_detected=t.get("visible", False),
-            persistence=0.5,
-            spread_potential=task_config.get("lateral_spread_base_prob", 0.2),
-        ))
-
-    agg_severity = min(1.0, sum(t.severity for t in threat_objects) / max(1, TOTAL_NODES))
-    compromised = [t["node"] for t in snap["threats"] if not t.get("contained")]
-
-    return EnvironmentState(
-        assets=assets,
-        compromised_nodes=list(set(compromised)),
-        active_threats=threat_objects,
-        threat_severity=agg_severity,
-        network_load=min(1.0, len(active) / TOTAL_NODES),
-        resource_availability=task_config.get("resource_per_step", 1.0),
-        detection_confidence=0.5,
-        time_step=snap["step"],
-        episode_score=snap["score"],
-    )
-
-
-def _build_network_graph(step_health: int) -> NetworkGraph:
-    """Build a minimal NetworkGraph adapter for RewardFunction."""
-    ng = NetworkGraph.__new__(NetworkGraph)
-    ng.assets = {}
-    for node in NODES:
-        crit = _NODE_CRITICALITY.get(node, 0.5)
-        ng.assets[node] = NetworkAsset(
-            id=node,
-            asset_type=AssetType.SERVER,
-            health=step_health / 100.0,
-            is_compromised=False,
-            is_isolated=False,
-            patch_level=0.8,
-            criticality=crit,
-        )
-    return ng
-
-
-def _compute_reward_via_engine(
-    state_before_snap: dict,
-    state_after_snap: dict,
-    matched: bool,
-    raw_action: str,
-    lateral_happened: bool,
-    scan_found_nothing: bool,
-    health_before: int,
-    health_after: int,
-    task_config: dict,
-) -> float:
-    """
-    Compute the step reward using engines/reward.py's RewardFunction.
-    Builds adapter objects from the dict state snapshots.
-    task_config is passed explicitly (never read from module global) for thread safety.
-
-    Returns a reward clamped to [0.0, 1.0] — same range as the old _clamp_reward().
-    """
-    env_before = _build_env_state(state_before_snap, health_before, task_config)
-    env_after  = _build_env_state(state_after_snap,  health_after,  task_config)
-    network    = _build_network_graph(health_after)
-
-    # ActionResult adapter — map raw HTTP action string to internal Action enum
-    _act_enum = (
-        _Action.RUN_DEEP_SCAN if raw_action.startswith("scan")
-        else _STR_TO_ACTION.get(raw_action, _Action.IGNORE)
-    )
-    # Target node: extract from scan_node_X or use first active threat node
-    _active = [t for t in state_before_snap["threats"] if not t.get("contained")]
-    _target = None
-    if raw_action.startswith("scan_node_"):
-        _target = raw_action[len("scan_"):]  # "node_1" .. "node_5"
-    elif _active:
-        _target = _active[0]["node"]
-
-    action_result = ActionResult(
-        action=_act_enum,
-        target_node=_target,
-        success=matched,
-        wasted=(not matched and not raw_action.startswith("scan") and raw_action != "ignore"),
-        availability_impact=(
-            0.30 if raw_action == "isolate_machine"
-            else 0.05 if raw_action in ("block_ip", "patch")
-            else 0.0
-        ),
-    )
-
-    # ThreatScore adapters — one per active threat before the step
-    threat_scores = [
-        ThreatScore(
-            threat_id=t.id,
-            node_id=t.current_node,
-            impact_score=t.severity,
-            spread_score=t.spread_potential,
-            likelihood_score=t.persistence,
-            urgency_score=t.detection_confidence,
-            composite_score=t.severity,
-            primary_driver="severity",
-        )
-        for t in env_before.active_threats
-    ]
-
-    # Lateral movement events
-    lateral_events: list[LateralMovementEvent] = []
-    if lateral_happened:
-        # Find any node that gained a new threat after the step
-        nodes_before = {t["node"] for t in state_before_snap["threats"]}
-        nodes_after  = {t["node"] for t in state_after_snap["threats"]}
-        for new_node in nodes_after - nodes_before:
-            _child = Threat(
-                id=f"lateral_{new_node}",
-                stage=AttackStage.LATERAL_SPREAD,
-                origin_node="unknown",
-                current_node=new_node,
-                severity=0.6,
-                detection_confidence=0.5,
-                is_detected=False,
-                persistence=0.5,
-                spread_potential=task_config.get("lateral_spread_base_prob", 0.2),
-            )
-            lateral_events.append(LateralMovementEvent(
-                parent_threat_id="lateral",
-                source_node="unknown",
-                target_node=new_node,
-                child_threat=_child,
-            ))
-
-    # Detection events
-    detection_events: list[DetectionEvent] = []
-    if scan_found_nothing:
-        detection_events.append(DetectionEvent(
-            threat_id=None,
-            node_id="unknown",
-            is_true_positive=False,
-            is_false_positive=True,
-            is_false_negative=False,
-            updated_confidence=0.0,
-            detection_method="scan",
-        ))
-
-    # Resource pool: use task's resource_per_step as budget (from session, not global)
-    budget = task_config.get("resource_per_step", 1.0)
-    action_cost = (
-        0.4 if raw_action == "isolate_machine"
-        else 0.3 if raw_action in ("block_ip", "patch")
-        else 0.2 if raw_action.startswith("scan")
-        else 0.0   # ignore
-    )
-    resource_pool = ResourcePool(
-        total=budget,
-        remaining=max(0.0, budget - action_cost),
-    )
-
-    reward, _ = _reward_fn.compute(
-        state_before=env_before,
-        state_after=env_after,
-        action_result=action_result,
-        threat_scores_before=threat_scores,
-        lateral_events=lateral_events,
-        detection_events=detection_events,
-        resource_pool=resource_pool,
-        network=network,
-    )
-    # EXPLICIT SAFETY: Always return float clamped to [0.0, 1.0] — no NaN/None possible
-    if not isinstance(reward, (int, float)) or reward != reward:  # catches None and NaN
-        raise ValueError(f"RewardFunction returned non-numeric reward: {reward!r}")
-    return float(max(0.0, min(1.0, reward)))
 
 # Per-task config derived from task classes — all difficulty params now live there.
 # age_visibility_threshold is HTTP-API-specific (not in TaskConfig).
@@ -438,11 +197,13 @@ class Session:
     attack_plan: dict = field(default_factory=dict)
 
 
-# Session store — keyed by UUID string
+# Session store — keyed by UUID string.
+# No default session — every client must use session_id from /reset.
 _SESSIONS: dict[str, Session] = {}
 # Maximum live sessions (evict oldest after this limit to prevent memory growth)
 _MAX_SESSIONS = 256
 
+# Kept for backward-compat in exception handlers that need a session key
 _DEFAULT_SESSION_ID = "default"
 
 
@@ -458,18 +219,13 @@ def _resolve_sid(session_id: str | None, sess: "Session") -> str:
     return session_id if session_id else _DEFAULT_SESSION_ID
 
 
-def _get_session(session_id: str | None) -> Session:
-    """Return the session for the given id, or the default session as fallback."""
-    sid = session_id or _DEFAULT_SESSION_ID
-    if sid not in _SESSIONS:
-        # Auto-create a default session for backward-compatible single-user use
-        if sid == _DEFAULT_SESSION_ID and _DEFAULT_SESSION_ID not in _SESSIONS:
-            cfg = TASK_OVERRIDES["easy"]
-            _SESSIONS[_DEFAULT_SESSION_ID] = Session(
-                task_name="easy", task_config=cfg,
-            )
-            _do_reset_session(_SESSIONS[_DEFAULT_SESSION_ID])
-    return _SESSIONS.get(sid, _SESSIONS.get(_DEFAULT_SESSION_ID))
+def _get_session(session_id: str | None) -> Session | None:
+    """Return the session for the given id, or None if not found.
+    No default session is created — callers must handle None.
+    """
+    if not session_id:
+        return None
+    return _SESSIONS.get(session_id.strip())
 
 
 # ─── STATE HELPERS (session-scoped) ──────────────────────────────────────────
@@ -497,15 +253,17 @@ def _make_threats_fixed(task_config: dict) -> list:
         t_type = random.choice(ATTACKS)
         node   = random.choice(NODES)
         threats.append({
-            "id":       f"{t_type}_{node}_{idx}",
-            "type":     t_type,
-            "node":     node,
-            "visible":  False,
-            "age":      0,
-            "stage":    "initial",
-            "contained": False,
-            "mitre_id": MITRE_MAP[t_type],
-            "severity": _initial_severity(t_type),
+            "id":            f"{t_type}_{node}_{idx}",
+            "type":          t_type,
+            "original_type": t_type,  # preserved even after stage escalation
+            "node":          node,
+            "visible":       False,
+            "age":           0,
+            "stage":         "initial",
+            "escalated":     False,
+            "contained":     False,
+            "mitre_id":      MITRE_MAP[t_type],
+            "severity":      _initial_severity(t_type),
         })
     return threats
 
@@ -627,9 +385,14 @@ def _age_threats(sess: Session) -> None:
             # Severity grows each step — makes severity-based action logic meaningful
             t["severity"] = round(min(1.0, t.get("severity", 0.5) + sev_growth), 3)
             if t["stage"] == "initial" and random.random() < prog_prob:
+                # Stage escalates to lateral_movement but original type is PRESERVED.
+                # The correct mitigation is always determined by original_type so the
+                # agent is never penalized for correctly identifying the threat before escalation.
                 t["stage"] = "lateral_movement"
-                t["type"]  = "lateral_movement"
-                t["mitre_id"] = MITRE_MAP.get("lateral_movement", "T1021")
+                # Keep t["type"] = original_type (do NOT mutate it)
+                if "original_type" not in t:
+                    t["original_type"] = t["type"]
+                t["escalated"] = True
 
 
 def _visible_threats(sess: Session) -> list:
@@ -637,11 +400,13 @@ def _visible_threats(sess: Session) -> list:
     for t in sess.state["threats"]:
         if t["visible"] and not t.get("contained"):
             out.append({
-                "type": t["type"],
-                "node": t["node"],
-                "stage": t["stage"],
-                "age": t["age"],
-                "mitre_id": t.get("mitre_id", MITRE_MAP.get(t["type"], "T0000")),
+                "type":          t["type"],
+                "original_type": t.get("original_type", t["type"]),
+                "escalated":     t.get("escalated", False),
+                "node":          t["node"],
+                "stage":         t["stage"],
+                "age":           t["age"],
+                "mitre_id":      t.get("mitre_id", MITRE_MAP.get(t.get("original_type", t["type"]), "T0000")),
             })
     return [enrich_threat(t) for t in out]
 
@@ -708,16 +473,20 @@ def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None
 
 
 # ─── EXCEPTION HANDLERS ───────────────────────────────────────────────────────
+_EMPTY_OBS: dict = {
+    "visible_threats": [], "hidden_node_count": TOTAL_NODES,
+    "scan_coverage": 0.0, "system_health": 100,
+    "score": 0.0, "normalized_score": 0.0, "step": 0, "done": False,
+}
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     if DEBUG:
         log.debug(f"Validation error: {exc.errors()}")
-    sess = _get_session(_DEFAULT_SESSION_ID)
-    _validate_session_state(sess)
-    obs = _obs(sess)
     return JSONResponse(
         status_code=200,
-        content=safe_response(obs, action="", reward=-0.5,
+        content=safe_response(_EMPTY_OBS, action="", reward=0.0,
                                reason="Invalid input received. Action rejected.",
                                confidence=0.0, error="invalid action"),
     )
@@ -726,16 +495,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     log.error(f"Unhandled exception: {exc}", exc_info=True)
-    sess = _get_session(_DEFAULT_SESSION_ID)
-    try:
-        _validate_session_state(sess)
-        obs = _obs(sess)
-    except Exception:
-        _do_reset_session(sess)
-        obs = _obs(sess)
     return JSONResponse(
         status_code=500,
-        content=safe_response(obs, action="", reward=_clamp_reward(-0.5),
+        content=safe_response(_EMPTY_OBS, action="", reward=0.0,
                                reason="Internal error. State preserved.",
                                confidence=0.0, error="internal error"),
     )
@@ -778,12 +540,14 @@ def get_tasks():
 @app.get("/history")
 def get_history(session_id: str | None = None):
     sess = _get_session(session_id)
+    if sess is None:
+        return {"error": "session_id required. Call /reset first.", "episode_steps": [], "total_steps": 0}
     return {
         "episode_steps": sess.episode_history,
         "total_steps": len(sess.episode_history),
         "total_reward": round(sum(s["reward"] for s in sess.episode_history), 4),
         "final_status": "done" if sess.episode_history and sess.episode_history[-1]["done"] else "in_progress",
-        "session_id": _resolve_sid(session_id, sess),
+        "session_id": session_id,
     }
 
 
@@ -822,6 +586,13 @@ def reset(req: ResetRequest = None):
 @app.post("/state/", response_model=Observation)
 def get_state(session_id: str | None = None):
     sess = _get_session(session_id)
+    if sess is None:
+        return JSONResponse(status_code=200, content={
+            "visible_threats": [], "hidden_node_count": TOTAL_NODES,
+            "scan_coverage": 0.0, "system_health": 100,
+            "score": 0.0, "normalized_score": 0.0, "step": 0, "done": False,
+            "error": "session_id required. Call /reset first.",
+        })
     try:
         return Observation(**_obs(sess))
     except Exception as e:
@@ -905,15 +676,6 @@ def step(req: StepRequest):
         matched_threat_type = None
         scan_found_nothing = False
 
-        import copy as _copy
-        health_before = s["system_health"]
-        state_before_snap = {
-            "threats": _copy.deepcopy(s["threats"]),
-            "step":    s["step"],
-            "score":   s["score"],
-            "system_health": health_before,
-        }
-
         # ── SCAN ──
         if raw_action.startswith("scan"):
             node = raw_action[len("scan_"):] if raw_action.startswith("scan_") else ""
@@ -942,8 +704,9 @@ def step(req: StepRequest):
         else:
             for t in s["threats"]:
                 if t["visible"] and not t.get("contained"):
-                    # EXPLOIT FIX: Correct action depends on severity + stage
-                    correct = _get_correct_action(t["type"], t.get("severity", 0.5), t.get("stage", "initial"))
+                    # Use original_type for MITRE lookup — type is preserved even after
+                    # stage escalation so agents are never penalized for correct identification.
+                    correct = _get_correct_action(t.get("original_type", t["type"]), t.get("severity", 0.5), t.get("stage", "initial"))
                     if raw_action == correct:
                         t["contained"] = True
                         matched_threat_type = t["type"]
@@ -969,55 +732,29 @@ def step(req: StepRequest):
             _active = sum(1 for t in s["threats"] if not t.get("contained"))
             s["system_health"] = max(0, s["system_health"] - _degrade_rate * (_active / TOTAL_NODES) * 100)
 
-        nodes_before_age = {t["node"] for t in state_before_snap["threats"]}
         _age_threats(sess)
         _update_visibility(sess)
         _clamp_health(sess)
 
-        nodes_after = {t["node"] for t in s["threats"]}
-        lateral_happened = len(nodes_after - nodes_before_age) > 0
-
-        state_after_snap = {
-            "threats": s["threats"],
-            "step":    s["step"],
-            "score":   s["score"],
-            "system_health": s["system_health"],
-        }
-        try:
-            reward = _compute_reward_via_engine(
-                state_before_snap=state_before_snap,
-                state_after_snap=state_after_snap,
-                matched=matched,
-                raw_action=raw_action,
-                lateral_happened=lateral_happened,
-                scan_found_nothing=scan_found_nothing,
-                health_before=health_before,
-                health_after=s["system_health"],
-                task_config=sess.task_config,  # session-scoped, thread-safe
-            )
-        except Exception as _reward_err:
-            # NO SILENT FALLBACK: re-raise so exception handlers return error response
-            raise RuntimeError(f"Reward computation failed: {_reward_err}") from _reward_err
-
-        # Override rewards to guarantee correct ordering per the MITRE spec:
-        #   correct mitigation: 0.75 base (+ 0.125 early bonus if age < 3)
-        #   wrong mitigation:   0.375
-        #   ignore:             0.125
-        #   scan (reveals):     0.505  scan (empty): 0.425
-        # The reward engine handles nuance; these overrides ensure the spec signal
-        # is unambiguous so agents following MITRE always beat agents that don't.
+        # Reward authority: MITRE-aligned lookup table.
+        # Normalized via _clamp_reward((r + 2.0) / 4.0) → [0.0, 1.0].
+        # correct:      raw 1.0 (+0.1 early bonus if age<3) → 0.750 (0.775)
+        # wrong:        raw -0.5                            → 0.375
+        # ignore:       raw -1.5                            → 0.125
+        # scan reveal:  raw 0.02                            → 0.505
+        # scan empty:   raw -0.3                            → 0.425
         if raw_action.startswith("scan"):
             _sn = raw_action[len("scan_"):] if raw_action.startswith("scan_") else ""
-            if _sn in NODES:
-                reward = _clamp_reward(0.02) if not scan_found_nothing else _clamp_reward(-0.3)
+            reward = _clamp_reward(0.02) if not scan_found_nothing else _clamp_reward(-0.3)
         elif raw_action == "ignore":
             reward = _clamp_reward(-1.5)
         elif raw_action in ("block_ip", "isolate_machine", "patch"):
             if matched:
-                _raw = 1.0 + 0.1 if early_bonus else 1.0
-                reward = _clamp_reward(_raw)
+                reward = _clamp_reward(1.1 if early_bonus else 1.0)
             else:
                 reward = _clamp_reward(-0.5)
+        else:
+            reward = _clamp_reward(-0.5)
 
         # Running average score — never saturates (each reward ∈ [0,1], mean ∈ [0,1])
         _all_rewards = sess.episode_rewards + [reward]
@@ -1180,6 +917,9 @@ def threat_intel(session_id: str | None = None):
     """Returns MITRE ATT&CK enriched threat intelligence about active threats."""
     try:
         sess = _get_session(session_id)
+        if sess is None:
+            return {"error": "session_id required", "active_campaigns": [], "risk_level": "UNKNOWN",
+                    "threat_summary": {}, "network_assessment": {}, "recommended_actions": []}
         _validate_session_state(sess)
         visible_threats = _visible_threats(sess)
         scan_coverage   = round(len(sess.state["scanned_nodes"]) / TOTAL_NODES, 3)
@@ -1271,6 +1011,8 @@ def get_analytics(session_id: str | None = None):
     """Returns real SOC metrics for the current episode."""
     try:
         sess = _get_session(session_id)
+        if sess is None:
+            return {"error": "session_id required", "soc_metrics": {}, "resources_remaining": 0.0}
         _validate_session_state(sess)
         visible_threats = _visible_threats(sess)
         total_steps   = sess.state["step"]
