@@ -27,13 +27,13 @@ class MediumTask(BaseTask):
         ),
         max_steps=50,
         initial_threat_count=2,
-        resource_per_step=0.75,         # tighter budget than default
-        attack_progression_prob=0.18,
-        lateral_spread_base_prob=0.22,
+        resource_per_step=0.60,         # tighter budget
+        attack_progression_prob=0.25,
+        lateral_spread_base_prob=0.30,
         natural_severity_growth=0.03,
         health_degradation_rate=0.05,
         false_positive_rate=0.12,       # moderate alert noise
-        false_negative_rate=0.18,
-        base_detection_prob=0.55,
+        false_negative_rate=0.30,
+        base_detection_prob=0.45,
         passing_score=0.55,
     )

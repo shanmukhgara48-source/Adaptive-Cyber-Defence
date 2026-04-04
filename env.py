@@ -323,9 +323,7 @@ class AdaptiveCyberDefenseEnv:
         )
         self._last_reward_breakdown = reward_breakdown
 
-        # Accumulate score normalized by actual steps taken (not max_steps), so
-        # easy (30-step) and nightmare (20-step) episodes score on the same scale.
-        self._episode_score = min(1.0, self._episode_score + reward / max(1, self._step_count + 1))
+        self._episode_score = min(1.0, self._episode_score + reward / self.config.max_steps)
         self._step_count += 1
 
         # -- 8. Check terminal conditions ------------------------------------

@@ -26,13 +26,15 @@ for _p in (_HERE.parent, _HERE):
 
 from adaptive_cyber_defense.models.action import Action, ActionInput, ACTION_PROFILES
 from adaptive_cyber_defense.models.state  import EnvironmentState
-from adaptive_cyber_defense.tasks         import EasyTask, MediumTask, HardTask, NightmareTask
+from adaptive_cyber_defense.tasks         import EasyTask, MediumTask, HardTask, NightmareTask, EliteTask, ImpossibleTask
 
 _TASK_MAP = {
-    "easy":      EasyTask,
-    "medium":    MediumTask,
-    "hard":      HardTask,
-    "nightmare": NightmareTask,
+    "easy":       EasyTask,
+    "medium":     MediumTask,
+    "hard":       HardTask,
+    "nightmare":  NightmareTask,
+    "elite":      EliteTask,
+    "impossible": ImpossibleTask,
 }
 
 
@@ -102,6 +104,17 @@ def _best_target(env_state: EnvironmentState) -> Optional[str]:
     return next(iter(env_state.assets), None)
 
 
+# Maps openenv.yaml / HTTP API action names → Action enum values.
+# Needed because the HTTP API uses snake_case names (e.g. "isolate_machine")
+# while the internal Action enum uses different identifiers (e.g. ISOLATE_NODE).
+_OPENENV_TO_ACTION: dict[str, Action] = {
+    "block_ip":        Action.BLOCK_IP,
+    "isolate_machine": Action.ISOLATE_NODE,
+    "patch":           Action.PATCH_SYSTEM,
+    "ignore":          Action.IGNORE,
+}
+
+
 def _to_action_input(action: Union[Action, str, dict, ActionInput],
                      env_state: EnvironmentState) -> ActionInput:
     """Normalise any action representation into an ActionInput."""
@@ -110,6 +123,17 @@ def _to_action_input(action: Union[Action, str, dict, ActionInput],
 
     # Resolve action enum
     if isinstance(action, str):
+        lower = action.lower()
+        # Translate openenv.yaml / HTTP API names first
+        if lower in _OPENENV_TO_ACTION:
+            action_enum = _OPENENV_TO_ACTION[lower]
+            target = _best_target(env_state) if action_enum != Action.IGNORE else None
+            return ActionInput(action=action_enum, target_node=target)
+        if lower.startswith("scan_node_"):
+            # "scan_node_1" → RUN_DEEP_SCAN targeting "node_1"
+            node = lower[len("scan_"):]  # "node_1" .. "node_5"
+            return ActionInput(action=Action.RUN_DEEP_SCAN, target_node=node)
+        # Fallback: treat as internal enum name (e.g. "BLOCK_IP", "RUN_DEEP_SCAN")
         action_enum = Action[action.upper()]
     elif isinstance(action, Action):
         action_enum = action

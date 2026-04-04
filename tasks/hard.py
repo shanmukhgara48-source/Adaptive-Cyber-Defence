@@ -30,13 +30,13 @@ class HardTask(BaseTask):
         ),
         max_steps=30,
         initial_threat_count=5,
-        resource_per_step=0.55,         # severely limited budget
-        attack_progression_prob=0.35,   # fast kill-chain (reduced from 0.38 — old value caused PHISHING→EXFIL in 5 steps)
-        lateral_spread_base_prob=0.35,  # aggressive spread
+        resource_per_step=0.30,         # severely limited budget
+        attack_progression_prob=0.40,   # fast kill-chain
+        lateral_spread_base_prob=0.55,  # very aggressive spread
         natural_severity_growth=0.05,
         health_degradation_rate=0.07,
         false_positive_rate=0.20,       # high noise — many ghost alerts
-        false_negative_rate=0.45,       # attacker evades detection often
-        base_detection_prob=0.25,       # low baseline detection
+        false_negative_rate=0.55,       # attacker evades detection often
+        base_detection_prob=0.20,       # low baseline detection
         passing_score=0.45,
     )

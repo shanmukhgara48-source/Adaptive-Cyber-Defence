@@ -31,15 +31,15 @@ class NightmareTask(BaseTask):
             "kill chain. Designed to challenge frontier LLMs. "
             "Random agent scores ~0.10."
         ),
-        max_steps=20,
+        max_steps=15,
         initial_threat_count=5,
-        resource_per_step=0.35,
+        resource_per_step=0.25,
         attack_progression_prob=0.45,
         lateral_spread_base_prob=0.50,
         natural_severity_growth=0.08,
         health_degradation_rate=0.12,
         false_positive_rate=0.35,
-        false_negative_rate=0.60,
-        base_detection_prob=0.15,
+        false_negative_rate=0.70,
+        base_detection_prob=0.10,
         passing_score=0.25,
     )
