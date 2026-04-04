@@ -16,7 +16,7 @@ An autonomous SOC simulation environment built on **FastAPI** and packaged as an
 
 ## Overview
 
-The environment simulates a 5-node corporate network under continuous attack. Three threat types (phishing, malware, DDoS) spawn on random nodes and age over time — escalating from `initial` to `lateral_movement` if not contained. The agent must scan to reveal hidden threats, then apply the correct mitigation before system health reaches zero.
+The environment simulates a 5-node corporate network under continuous attack. Five threat types (phishing, malware, ransomware, DDoS, lateral_movement) spawn on random nodes and age over time — escalating from `initial` to `lateral_movement` if not contained. The agent must scan to reveal hidden threats, then apply the correct MITRE-aligned mitigation before system health reaches zero.
 
 ---
 
@@ -62,16 +62,18 @@ The environment simulates a 5-node corporate network under continuous attack. Th
 ```json
 {
   "action":            "block_ip",
-  "reward":            1.0,
+  "reward":            0.75,
   "visible_threats":   [],
   "hidden_node_count": 3,
   "scan_coverage":     0.4,
   "system_health":     85,
-  "score":             1.5,
+  "score":             0.62,
   "step":              8,
   "done":              false
 }
 ```
+
+Reward is normalised to `[0.0, 1.0]` via `(raw + 2.0) / 4.0`. Correct mitigation gives `raw=1.0 → reward=0.750`. Score is the running mean reward for the episode, also in `[0.0, 1.0]`.
 
 ---
 
@@ -79,21 +81,23 @@ The environment simulates a 5-node corporate network under continuous attack. Th
 
 | Action | Effect |
 |--------|--------|
-| `block_ip` | Neutralises phishing threats |
-| `isolate_machine` | Neutralises malware threats |
-| `patch` | Neutralises DDoS threats |
-| `ignore` | −10 health, −1.0 reward |
+| `block_ip` | Neutralises phishing (T1566) and lateral_movement (T1021) threats |
+| `isolate_machine` | Neutralises malware (T1204) and ransomware (T1486) threats |
+| `patch` | Neutralises DDoS (T1499) threats |
+| `ignore` | −10 health, reward penalty |
 | `scan_node_1` … `scan_node_5` | Reveals hidden threats on that node |
 
 ---
 
 ## MITRE ATT&CK Mapping
 
-| Threat Type | Technique | Tactic |
-|-------------|-----------|--------|
-| phishing | T1566 | Initial Access |
-| malware | T1204 | Execution |
-| ddos | T1498 | Impact |
+| Threat Type | Technique | Tactic | Correct Action |
+|-------------|-----------|--------|----------------|
+| phishing | T1566 | Initial Access | block_ip |
+| malware | T1204 | Execution | isolate_machine |
+| ransomware | T1486 | Impact | isolate_machine |
+| ddos | T1499 | Impact | patch |
+| lateral_movement | T1021 | Lateral Movement | block_ip |
 
 ---
 

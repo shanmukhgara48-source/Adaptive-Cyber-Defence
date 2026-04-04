@@ -378,20 +378,21 @@ def run_task(task_name: str) -> dict:
         final_status = "max_steps_reached"
 
     # ── Grader formula — EXACT match to tasks/base.py _compute_episode_score ────
-    # score = 0.50 × containment_rate   (fraction of threats contained)
-    #       + 0.20 × critical_health    (critical asset health at end, [0,1])
-    #       + 0.15 × avg_resource_left  (avg fraction of step budget unused)
+    # score = 0.50 × containment_rate   (threats_contained / threats_total_spawned)
+    #       + 0.20 × critical_health    (system_health / 100 — best HTTP-API proxy)
+    #       + 0.15 × avg_resource_left  (1 - action_cost / budget, from /analytics)
     #       + 0.15 × avg_reward         (avg per-step reward, [0,1])
     try:
         analytics = requests.get(f"{BASE_URL}/analytics",
                                  params={"session_id": session_id}, timeout=5).json()
         soc = analytics.get("soc_metrics", {})
         net = analytics.get("network_status", {})
-        # containment_rate: threats contained / threats detected (matches base.py)
+        # containment_rate: threats_contained / threats_total_spawned — matches base.py exactly.
+        # /analytics now uses threats_total_spawned as denominator (not n_detected).
         containment_rate  = float(soc.get("containment_rate", 0.0))
-        # critical_health: system_health [0,100] → [0,1] (matches base.py survival_rate)
+        # critical_health: system_health/100 — HTTP API proxy for base.py avg critical-asset health.
         critical_health   = float(net.get("system_health", 0)) / 100.0
-        # avg_resource_left: fraction of per-step budget unused (matches base.py)
+        # avg_resource_left: fraction of per-step budget unused (matches base.py intent)
         avg_resource_left = float(analytics.get("resources_remaining", 0.0))
         # avg_reward: mean per-step reward (matches base.py avg_step_reward weight)
         avg_reward        = float(soc.get("avg_reward_per_step",

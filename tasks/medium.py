@@ -10,7 +10,7 @@ add noise to the alert queue.
 
 Win condition: contain both threats before exfiltration occurs on any critical
 asset, without exhausting resources mid-episode.
-Passing score: 0.55
+Passing score: 0.60
 """
 
 from .base import BaseTask, TaskConfig

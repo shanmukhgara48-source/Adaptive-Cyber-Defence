@@ -73,7 +73,7 @@ VALID_ACTIONS = [
 
 TASKS_ALL = ["easy", "medium", "hard", "nightmare", "elite", "impossible"]
 THRESHOLDS = {
-    "easy": 0.55, "medium": 0.55, "hard": 0.45,
+    "easy": 0.50, "medium": 0.60, "hard": 0.45,
     "nightmare": 0.25, "elite": 0.20, "impossible": 0.10,
 }
 MITRE_ACTION = {

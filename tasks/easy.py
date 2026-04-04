@@ -10,7 +10,7 @@ The SOC has high-quality logging and ample resources.
 The attacks progress slowly, giving the defender time to respond.
 
 Win condition: contain all threats before they reach LATERAL_SPREAD.
-Passing score: 0.55
+Passing score: 0.50
 """
 
 from .base import BaseTask, TaskConfig

@@ -203,20 +203,11 @@ _SESSIONS: dict[str, Session] = {}
 # Maximum live sessions (evict oldest after this limit to prevent memory growth)
 _MAX_SESSIONS = 256
 
-# Kept for backward-compat in exception handlers that need a session key
-_DEFAULT_SESSION_ID = "default"
-
-
 def _evict_oldest_sessions():
     """Keep session count under _MAX_SESSIONS by dropping the oldest entries."""
     while len(_SESSIONS) >= _MAX_SESSIONS:
         oldest = next(iter(_SESSIONS))
         del _SESSIONS[oldest]
-
-
-def _resolve_sid(session_id: str | None, sess: "Session") -> str:
-    """Return the canonical session_id string for a response."""
-    return session_id if session_id else _DEFAULT_SESSION_ID
 
 
 def _get_session(session_id: str | None) -> Session | None:
@@ -1021,6 +1012,10 @@ def get_analytics(session_id: str | None = None):
 
         n_detected  = len(sess.threats_detected)
         n_contained = len(sess.threats_contained)
+        # Total threats spawned this episode (initial + lateral spreads).
+        # Used as the denominator for containment_rate to match tasks/base.py exactly:
+        #   containment_rate = threats_contained / threats_total_spawned
+        threats_total_spawned = len(sess.state["threats"])
 
         # Avoid division by zero; return 0.0 rates when nothing detected yet
         mttd = round(total_steps / max(1, n_detected), 2)
@@ -1032,7 +1027,9 @@ def get_analytics(session_id: str | None = None):
             n_detected / max(1, n_detected + hidden_count), 3
         )
 
-        containment_rate = round(n_contained / max(1, n_detected), 3) if n_detected > 0 else 0.0
+        # containment_rate: contained / total_spawned — matches tasks/base.py formula.
+        # (Previously used n_detected as denominator, which diverged when threats were never detected.)
+        containment_rate = round(n_contained / max(1, threats_total_spawned), 3)
 
         total_mitigations = sum(
             1 for a in sess.episode_actions_taken
@@ -1114,6 +1111,7 @@ def get_analytics(session_id: str | None = None):
             "threat_tracking": {
                 "threats_detected":      n_detected,
                 "threats_contained":     n_contained,
+                "threats_total_spawned": threats_total_spawned,
                 "threats_active":        len(visible_threats),
                 "threats_ids_detected":  list(sess.threats_detected),
             },
