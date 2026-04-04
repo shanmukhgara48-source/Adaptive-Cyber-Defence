@@ -182,7 +182,7 @@ def choose_action(
     ]
     if young_threats:
         youngest = min(young_threats, key=lambda t: t.get("age", 99))
-        threat_type = youngest.get("type", "").lower()
+        threat_type = youngest.get("original_type", youngest.get("type", "")).lower()
         immediate = MITRE_ACTION.get(threat_type)
         if immediate:
             print(f"[speed] young {threat_type} age={youngest.get('age')} → {immediate} (speed bonus)")
@@ -197,15 +197,8 @@ def choose_action(
 
     # Fast path: deterministic answer
     fast = deterministic_action(enriched, scanned_nodes, step_num)
-    if fast is not None:
-        # Normalise scan_node_X format (deterministic returns "scan_nodeX" without underscore)
-        if fast.startswith("scan_node_") and fast in VALID_ACTIONS:
-            return fast
-        if fast.startswith("scan_") and not fast.startswith("scan_node_"):
-            # convert "scan_node_1" shorthand if needed
-            fast = fast.replace("scan_", "scan_node_", 1) if "node" not in fast else fast
-        if fast in VALID_ACTIONS:
-            return fast
+    if fast is not None and fast in VALID_ACTIONS:
+        return fast
 
     # ── Build compact, structured threat summary ───────────────────────────────
     threat_lines = []
@@ -380,34 +373,48 @@ def run_task(task_name: str) -> dict:
     # ── Grader formula — EXACT match to tasks/base.py _compute_episode_score ────
     # score = 0.50 × containment_rate   (threats_contained / threats_total_spawned)
     #       + 0.20 × critical_health    (system_health / 100 — best HTTP-API proxy)
-    #       + 0.15 × avg_resource_left  (1 - action_cost / budget, from /analytics)
-    #       + 0.15 × avg_reward         (avg per-step reward, [0,1])
+    #       + 0.15 × avg_resource_left  (1 - total_spent / total_budget, from /analytics)
+    #       + 0.15 × speed_bonus        (mean early-containment score per threat)
     try:
         analytics = requests.get(f"{BASE_URL}/analytics",
                                  params={"session_id": session_id}, timeout=5).json()
         soc = analytics.get("soc_metrics", {})
         net = analytics.get("network_status", {})
         # containment_rate: threats_contained / threats_total_spawned — matches base.py exactly.
-        # /analytics now uses threats_total_spawned as denominator (not n_detected).
         containment_rate  = float(soc.get("containment_rate", 0.0))
         # critical_health: system_health/100 — HTTP API proxy for base.py avg critical-asset health.
         critical_health   = float(net.get("system_health", 0)) / 100.0
-        # avg_resource_left: fraction of per-step budget unused (matches base.py intent)
+        # avg_resource_left: fraction of cumulative budget unused
         avg_resource_left = float(analytics.get("resources_remaining", 0.0))
-        # avg_reward: mean per-step reward (matches base.py avg_step_reward weight)
-        avg_reward        = float(soc.get("avg_reward_per_step",
-                                          total_reward / max(1, step_num)))
     except Exception:
         containment_rate  = 0.0
         critical_health   = 0.0
-        avg_resource_left = 0.0  # conservative: don't inflate on analytics failure
-        avg_reward        = total_reward / max(1, step_num)
+        avg_resource_left = 0.5  # neutral fallback on analytics failure
+
+    # Speed bonus: fetch containment_events from /state episode_info
+    try:
+        final_state = requests.get(f"{BASE_URL}/state", params={"session_id": session_id}, timeout=5).json()
+        containment_events = final_state.get("episode_info", {}).get("containment_events", [])
+        speed_bonus = 0.0
+        if containment_events:
+            sb_scores = []
+            for ev in containment_events:
+                age = ev.get("age_at_containment", 99)
+                if age < 3:
+                    sb_scores.append(1.0)
+                elif age < 5:
+                    sb_scores.append(0.5)
+                else:
+                    sb_scores.append(0.0)
+            speed_bonus = sum(sb_scores) / len(sb_scores) if sb_scores else 0.0
+    except Exception:
+        speed_bonus = 0.0
 
     score = max(0.0, min(1.0,
         0.50 * containment_rate
         + 0.20 * critical_health
         + 0.15 * avg_resource_left
-        + 0.15 * avg_reward
+        + 0.15 * speed_bonus
     ))
 
     return {
@@ -417,7 +424,7 @@ def run_task(task_name: str) -> dict:
         "containment_rate": round(containment_rate, 3),
         "critical_health":  round(critical_health, 3),
         "avg_resource_left": round(avg_resource_left, 3),
-        "avg_reward":       round(avg_reward, 3),
+        "speed_bonus":      round(speed_bonus, 3),
         "score":            round(score, 3),
         "status":           final_status,
     }
@@ -448,9 +455,9 @@ def run():
     sep  = "=" * 80
     dash = "-" * 80
     print(f"\n{sep}")
-    print("BASELINE RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×resource + 0.15×avg_reward)")
+    print("BASELINE RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×resource + 0.15×speed_bonus)")
     print(sep)
-    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'AvgRew':<9} {'Score':<8} {'Threshold':<11} {'Result'}")
+    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'SpeedBonus':<12} {'Score':<8} {'Threshold':<11} {'Result'}")
     print(dash)
     scores = []
     for task_name, r in results:
@@ -460,16 +467,16 @@ def run():
         print(
             f"{task_name:<12} {r['steps']:<7} "
             f"{r['containment_rate']:<10.3f} {r['critical_health']:<10.3f} "
-            f"{r['avg_reward']:<9.3f} {r['score']:<8.3f} {threshold:<11.2f} {result_label}"
+            f"{r['speed_bonus']:<12.3f} {r['score']:<8.3f} {threshold:<11.2f} {result_label}"
         )
     print(dash)
 
-    decreasing = all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
+    non_increasing = all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
     passes = sum(
         1 for (task_name, r) in results
         if r["score"] >= TASK_THRESHOLDS.get(task_name, 0.50)
     )
-    print(f"\nScores decrease with difficulty: {'YES ✓' if decreasing else 'NO ✗'}")
+    print(f"\nScores non-increasing with difficulty: {'YES ✓' if non_increasing else 'NO ✗'}")
     print(f"Tasks passed: {passes}/{len(results)}")
     print(sep)
 

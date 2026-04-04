@@ -24,6 +24,7 @@ class Observation(BaseModel):
     normalized_score:  float = 0.0   # running average ∈ [0,1] — proper learning signal
     step:              int   = 0
     done:              bool  = False
+    episode_info:      dict[str, Any] | None = None
 
 
 class ActionRequest(BaseModel):

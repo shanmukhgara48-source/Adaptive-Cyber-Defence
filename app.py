@@ -2,6 +2,7 @@ import random
 import logging
 import math
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -175,7 +176,8 @@ def translate_action(raw_action: str) -> str:
 app = FastAPI(title="Adaptive Cyber Defense", version="2.0.0")
 
 # ─── RED TEAM ─────────────────────────────────────────────────────────────────
-adaptive_attacker = AdaptiveAttacker(seed=int(_os.getenv("ATTACKER_SEED", "42")))
+# AdaptiveAttacker is instantiated per-session in /reset to prevent cross-session contamination.
+_ATTACKER_SEED = int(_os.getenv("ATTACKER_SEED", "42"))
 
 # ─── SESSION ──────────────────────────────────────────────────────────────────
 # Each call to /reset creates an isolated Session.  Concurrent users/judges
@@ -194,12 +196,15 @@ class Session:
     threats_detected:      set  = field(default_factory=set)
     threats_contained:     set  = field(default_factory=set)
     false_positive_actions: int = 0
+    containment_events: list = field(default_factory=list)
     attack_plan: dict = field(default_factory=dict)
+    rng: random.Random = field(default_factory=random.Random)
+    attacker: object = field(default_factory=lambda: None)
 
 
 # Session store — keyed by UUID string.
 # No default session — every client must use session_id from /reset.
-_SESSIONS: dict[str, Session] = {}
+_SESSIONS: OrderedDict[str, Session] = OrderedDict()
 # Maximum live sessions (evict oldest after this limit to prevent memory growth)
 _MAX_SESSIONS = 256
 
@@ -212,11 +217,15 @@ def _evict_oldest_sessions():
 
 def _get_session(session_id: str | None) -> Session | None:
     """Return the session for the given id, or None if not found.
-    No default session is created — callers must handle None.
+    Moves accessed sessions to end for LRU eviction ordering.
     """
     if not session_id:
         return None
-    return _SESSIONS.get(session_id.strip())
+    sid = session_id.strip()
+    sess = _SESSIONS.get(sid)
+    if sess is not None:
+        _SESSIONS.move_to_end(sid)
+    return sess
 
 
 # ─── STATE HELPERS (session-scoped) ──────────────────────────────────────────
@@ -231,48 +240,86 @@ _SEVERITY_RANGES = {
 }
 
 
-def _initial_severity(t_type: str) -> float:
+def _initial_severity(t_type: str, rng: random.Random) -> float:
     lo, hi = _SEVERITY_RANGES.get(t_type, (0.4, 0.7))
-    return round(random.uniform(lo, hi), 3)
+    return round(rng.uniform(lo, hi), 3)
 
 
-def _make_threats_fixed(task_config: dict) -> list:
+def _compute_speed_bonus(containment_events: list) -> float:
+    """Compute speed bonus: mean of (1.0 if age<3, 0.5 if age<5, else 0.0) per contained threat."""
+    if not containment_events:
+        return 0.0
+    scores = []
+    for ev in containment_events:
+        age = ev.get("age_at_containment", 99)
+        if age < 3:
+            scores.append(1.0)
+        elif age < 5:
+            scores.append(0.5)
+        else:
+            scores.append(0.0)
+    return round(sum(scores) / len(scores), 4)
+
+
+def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) -> list:
     """Make threats for a new episode using the given task config."""
     threats = []
     count = task_config.get("threat_count", 3)
     for idx in range(count):
-        t_type = random.choice(ATTACKS)
-        node   = random.choice(NODES)
+        t_type = rng.choice(ATTACKS)
+        node   = rng.choice(NODES)
         threats.append({
-            "id":            f"{t_type}_{node}_{idx}",
-            "type":          t_type,
-            "original_type": t_type,  # preserved even after stage escalation
-            "node":          node,
-            "visible":       False,
-            "age":           0,
-            "stage":         "initial",
-            "escalated":     False,
-            "contained":     False,
-            "mitre_id":      MITRE_MAP[t_type],
-            "severity":      _initial_severity(t_type),
+            "id":              f"{t_type}_{node}_{idx}",
+            "type":            t_type,
+            "original_type":   t_type,  # preserved even after stage escalation
+            "node":            node,
+            "visible":         False,
+            "age":             0,
+            "stage":           "initial",
+            "escalated":       False,
+            "contained":       False,
+            "spread_attempted": False,
+            "mitre_id":        MITRE_MAP[t_type],
+            "severity":        _initial_severity(t_type, rng),
         })
+    # If attacker has a strategy, bias threat types accordingly
+    if attacker is not None:
+        strategy = getattr(attacker, 'current_strategy', None)
+        _STRATEGY_BIAS = {
+            "APT":             ["phishing", "malware"],
+            "RANSOMWARE":      ["ransomware"],
+            "INSIDER_THREAT":  ["lateral_movement"],
+            "SUPPLY_CHAIN":    ["malware"],
+            "ZERO_DAY":        ["malware", "ransomware"],
+        }
+        preferred = _STRATEGY_BIAS.get(strategy, [])
+        if preferred:
+            for t in threats:
+                # 60% chance to override type with a strategy-preferred type
+                if rng.random() < 0.6:
+                    t["type"] = rng.choice(preferred)
+                    t["original_type"] = t["type"]
+                    t["mitre_id"] = MITRE_MAP[t["type"]]
+                    t["severity"] = _initial_severity(t["type"], rng)
+                    t["id"] = f"{t['type']}_{t['node']}_{threats.index(t)}"
     return threats
 
 
-def _fresh_state(task_config: dict) -> dict:
+def _fresh_state(task_config: dict, rng: random.Random, attacker=None) -> dict:
     return {
-        "threats": _make_threats_fixed(task_config),
+        "threats": _make_threats_fixed(task_config, rng, attacker),
         "scanned_nodes": set(),
         "system_health": 100,
         "score": 0.0,
         "step": 0,
         "done": False,
+        "false_positives_seen": 0,
     }
 
 
 def _do_reset_session(sess: Session) -> None:
     """Reset all mutable fields on an existing Session object in-place."""
-    sess.state                  = _fresh_state(sess.task_config)
+    sess.state                  = _fresh_state(sess.task_config, sess.rng, sess.attacker)
     sess.history                = []
     sess.episode_history        = []
     sess.episode_actions_taken  = []
@@ -280,6 +327,7 @@ def _do_reset_session(sess: Session) -> None:
     sess.threats_detected       = set()
     sess.threats_contained      = set()
     sess.false_positive_actions = 0
+    sess.containment_events     = []
     sess.attack_plan            = {}
 
 
@@ -299,6 +347,7 @@ def _validate_session_state(sess: Session) -> None:
     except Exception as e:
         log.error(f"State corruption in session — auto-resetting: {e}")
         _do_reset_session(sess)
+        raise RuntimeError("session_state_reset") from e
 
 
 def _clamp_health(sess: Session) -> None:
@@ -359,23 +408,61 @@ def _update_visibility(sess: Session) -> None:
     for t in sess.state["threats"]:
         if t.get("contained") or t.get("visible"):
             continue
+        if t.get("is_false_positive"):
+            continue  # FPs are immediately visible when created
         if t["stage"] == "lateral_movement":
-            if random.random() > fn_rate:
+            if sess.rng.random() > fn_rate:
                 t["visible"] = True
         elif t["age"] >= age_thresh:
-            if random.random() < detect_prob and random.random() > fn_rate:
+            if sess.rng.random() < detect_prob and sess.rng.random() > fn_rate:
                 t["visible"] = True
+    _maybe_generate_false_positive(sess)
+
+
+def _maybe_generate_false_positive(sess: Session) -> None:
+    """With probability false_positive_rate, add a ghost (false positive) threat."""
+    fp_rate = sess.task_config.get("false_positive_rate", 0.0)
+    if fp_rate <= 0:
+        return
+    if sess.rng.random() > fp_rate:
+        return
+    # Don't create more than 2 active false positives at a time
+    existing_fps = sum(1 for t in sess.state["threats"] if t.get("is_false_positive") and t["visible"] and not t.get("contained"))
+    if existing_fps >= 2:
+        return
+    fp_type = sess.rng.choice(ATTACKS)
+    fp_node = sess.rng.choice(NODES)
+    fp_idx = len(sess.state["threats"])
+    fp_threat = {
+        "id": f"fp_{fp_type}_{fp_node}_{fp_idx}",
+        "type": fp_type,
+        "original_type": fp_type,
+        "node": fp_node,
+        "visible": True,  # immediately visible — that's the point, it "appears" as an alert
+        "age": 0,
+        "stage": "initial",
+        "escalated": False,
+        "contained": False,
+        "spread_attempted": False,
+        "mitre_id": MITRE_MAP[fp_type],
+        "severity": round(sess.rng.uniform(0.2, 0.5), 3),  # low-moderate severity
+        "is_false_positive": True,
+    }
+    sess.state["threats"].append(fp_threat)
+    sess.state["false_positives_seen"] = sess.state.get("false_positives_seen", 0) + 1
 
 
 def _age_threats(sess: Session) -> None:
     prog_prob = sess.task_config.get("attack_progression_prob", 0.15)
     sev_growth = sess.task_config.get("natural_severity_growth", 0.05)
     for t in sess.state["threats"]:
+        if t.get("is_false_positive"):
+            continue  # false positives don't age, escalate, or spread
         if not t.get("contained"):
             t["age"] += 1
             # Severity grows each step — makes severity-based action logic meaningful
             t["severity"] = round(min(1.0, t.get("severity", 0.5) + sev_growth), 3)
-            if t["stage"] == "initial" and random.random() < prog_prob:
+            if t["stage"] == "initial" and sess.rng.random() < prog_prob:
                 # Stage escalates to lateral_movement but original type is PRESERVED.
                 # The correct mitigation is always determined by original_type so the
                 # agent is never penalized for correctly identifying the threat before escalation.
@@ -384,6 +471,35 @@ def _age_threats(sess: Session) -> None:
                 if "original_type" not in t:
                     t["original_type"] = t["type"]
                 t["escalated"] = True
+            # Lateral spread: when a threat escalates to lateral_movement,
+            # it may spread to a new node with probability lateral_spread_base_prob
+            if t["stage"] == "lateral_movement" and t.get("escalated") and not t.get("spread_attempted"):
+                t["spread_attempted"] = True  # only attempt spread once per threat
+                spread_prob = sess.task_config.get("lateral_spread_base_prob", 0.0)
+                if spread_prob > 0 and sess.rng.random() < spread_prob:
+                    # Cap total threats at 8 to prevent memory/performance issues
+                    if len(sess.state["threats"]) < 8:
+                        # Find nodes without active (non-contained) threats
+                        occupied = {th["node"] for th in sess.state["threats"] if not th.get("contained")}
+                        free_nodes = [n for n in NODES if n not in occupied]
+                        if free_nodes:
+                            new_node = sess.rng.choice(free_nodes)
+                            new_type = "lateral_movement"
+                            new_idx = len(sess.state["threats"])
+                            sess.state["threats"].append({
+                                "id": f"{new_type}_{new_node}_{new_idx}_spread",
+                                "type": new_type,
+                                "original_type": new_type,
+                                "node": new_node,
+                                "visible": False,
+                                "age": 0,
+                                "stage": "initial",
+                                "escalated": False,
+                                "contained": False,
+                                "spread_attempted": False,
+                                "mitre_id": MITRE_MAP[new_type],
+                                "severity": _initial_severity(new_type, sess.rng),
+                            })
 
 
 def _visible_threats(sess: Session) -> list:
@@ -408,6 +524,23 @@ def _obs(sess: Session) -> dict:
         1 for t in sess.state["threats"] if not t["visible"] and not t.get("contained")
     )
     score = round(sess.state["score"], 4)
+    # Compute grader breakdown
+    _contained = sum(1 for t in sess.state["threats"] if t.get("contained") and not t.get("is_false_positive"))
+    _total = max(1, sum(1 for t in sess.state["threats"] if not t.get("is_false_positive")))
+    _containment_rate = round(_contained / _total, 4)
+    _critical_health = round(sess.state["system_health"] / 100.0, 4)
+    # Resources remaining (same formula as /analytics)
+    _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+    _cost_raw = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
+    _total_spent = sum(_cost_raw.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
+    _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
+    _resources_remaining = round(max(0.0, 1.0 - _total_spent / _total_budget), 3)
+    # Speed bonus
+    _speed_bonus = _compute_speed_bonus(sess.containment_events)
+    _weighted = round(
+        0.50 * _containment_rate + 0.20 * _critical_health + 0.15 * _resources_remaining + 0.15 * _speed_bonus,
+        4,
+    )
     return {
         "visible_threats":  _visible_threats(sess),
         "hidden_node_count": hidden_count,
@@ -417,6 +550,25 @@ def _obs(sess: Session) -> dict:
         "normalized_score": score,   # running average ∈ [0,1] — proper learning signal
         "step":             sess.state["step"],
         "done":             sess.state["done"],
+        "episode_info": {
+            "total_threats": sum(1 for t in sess.state["threats"] if not t.get("is_false_positive")),
+            "threats_contained": _contained,
+            "containment_rate": _containment_rate,
+            "critical_health": _critical_health,
+            "resources_remaining": _resources_remaining,
+            "speed_bonus": _speed_bonus,
+            "containment_events": list(sess.containment_events),
+            "false_positives_seen": sess.state.get("false_positives_seen", 0),
+            "false_positives_acted_on": sess.false_positive_actions,
+            "grader_breakdown": {
+                "containment_rate": _containment_rate,
+                "critical_health": _critical_health,
+                "resource_efficiency": _resources_remaining,
+                "speed_bonus": _speed_bonus,
+                "weighted_score": _weighted,
+                "formula": "0.50×contain + 0.20×health + 0.15×resource + 0.15×speed",
+            },
+        },
     }
 
 
@@ -487,7 +639,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def generic_exception_handler(request: Request, exc: Exception):
     log.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
-        status_code=500,
+        status_code=200,
         content=safe_response(_EMPTY_OBS, action="", reward=0.0,
                                reason="Internal error. State preserved.",
                                confidence=0.0, error="internal error"),
@@ -515,6 +667,10 @@ class StepRequest(BaseModel):
         if len(v) > MAX_ACTION_LEN:
             v = v[:MAX_ACTION_LEN]
         return v
+
+
+class StateRequest(BaseModel):
+    session_id: str | None = None
 
 
 # ─── ENDPOINTS ────────────────────────────────────────────────────────────────
@@ -551,7 +707,7 @@ def reset(req: ResetRequest = None):
     if task_name not in TASK_OVERRIDES:
         task_name = "easy"
     task_cfg   = TASK_OVERRIDES[task_name]
-    seed       = int(req.seed) if req and req.seed is not None else 0
+    seed       = int(req.seed) if req and req.seed is not None else random.randint(0, 2**31 - 1)
 
     # Determine session_id: use caller-provided or generate a new UUID
     sid = (req.session_id.strip() if req and req.session_id else None) or str(uuid.uuid4())
@@ -559,23 +715,33 @@ def reset(req: ResetRequest = None):
     # Evict old sessions if at capacity, then create or overwrite
     _evict_oldest_sessions()
     sess = Session(task_name=task_name, task_config=task_cfg)
-    random.seed(seed)
+    sess.rng = random.Random(seed)
+    sess.attacker = AdaptiveAttacker(seed=_ATTACKER_SEED)
     _do_reset_session(sess)
-    sess.attack_plan = adaptive_attacker.on_episode_start()
+    sess.attack_plan = sess.attacker.on_episode_start()
     _SESSIONS[sid] = sess
 
     obs = _obs(sess)
-    obs["task"]       = task_name
-    obs["session_id"] = sid          # always returned so callers can track it
+    obs["task"]             = task_name
+    obs["session_id"]       = sid          # always returned so callers can track it
+    obs["attacker_strategy"] = getattr(sess.attacker, 'current_strategy', 'PHISHING')
     # attack_plan kept internally for AdaptiveAttacker but never exposed to agents
     return obs
 
 
 @app.get("/state", response_model=Observation)
 @app.get("/state/", response_model=Observation)
+def get_state_get(session_id: str | None = None):
+    return _get_state_impl(session_id)
+
+
 @app.post("/state", response_model=Observation)
 @app.post("/state/", response_model=Observation)
-def get_state(session_id: str | None = None):
+def get_state_post(req: StateRequest = None):
+    return _get_state_impl(req.session_id if req else None)
+
+
+def _get_state_impl(session_id: str | None):
     sess = _get_session(session_id)
     if sess is None:
         return JSONResponse(status_code=200, content={
@@ -591,7 +757,8 @@ def get_state(session_id: str | None = None):
         return JSONResponse(status_code=200, content={
             "visible_threats": [], "hidden_node_count": 0,
             "scan_coverage": 0.0, "system_health": sess.state.get("system_health", 100),
-            "score": 0.0, "step": sess.state.get("step", 0), "done": sess.state.get("done", False),
+            "score": 0.0, "normalized_score": 0.0,
+            "step": sess.state.get("step", 0), "done": sess.state.get("done", False),
         })
 
 
@@ -676,7 +843,7 @@ def step(req: StepRequest):
                 revealed = False
                 for t in s["threats"]:
                     if t["node"] == node and not t["visible"] and not t.get("contained"):
-                        if random.random() > false_neg:
+                        if sess.rng.random() > false_neg:
                             t["visible"] = True
                             revealed = True
                 reason, confidence = _build_reason(raw_action, False, None, False)
@@ -699,10 +866,22 @@ def step(req: StepRequest):
                     # stage escalation so agents are never penalized for correct identification.
                     correct = _get_correct_action(t.get("original_type", t["type"]), t.get("severity", 0.5), t.get("stage", "initial"))
                     if raw_action == correct:
-                        t["contained"] = True
-                        matched_threat_type = t["type"]
-                        matched = True
-                        early_bonus = t["age"] < 3
+                        if t.get("is_false_positive"):
+                            # False positive: waste the action, remove ghost threat
+                            t["contained"] = True
+                            matched_threat_type = t["type"]
+                            matched = False  # treated as wrong action for reward purposes
+                            sess.false_positive_actions += 1
+                        else:
+                            t["contained"] = True
+                            matched_threat_type = t["type"]
+                            matched = True
+                            early_bonus = t["age"] < 3
+                            sess.containment_events.append({
+                                "threat_id": t["id"],
+                                "age_at_containment": t["age"],
+                                "threat_type": t.get("original_type", t["type"]),
+                            })
                         break
 
             if not matched:
@@ -735,7 +914,6 @@ def step(req: StepRequest):
         # scan reveal:  raw 0.02                            → 0.505
         # scan empty:   raw -0.3                            → 0.425
         if raw_action.startswith("scan"):
-            _sn = raw_action[len("scan_"):] if raw_action.startswith("scan_") else ""
             reward = _clamp_reward(0.02) if not scan_found_nothing else _clamp_reward(-0.3)
         elif raw_action == "ignore":
             reward = _clamp_reward(-1.5)
@@ -767,8 +945,12 @@ def step(req: StepRequest):
         sess.episode_actions_taken.append(raw_action)
         sess.episode_rewards.append(reward)
         _MITIGATIONS = {"block_ip", "isolate_machine", "patch"}
-        if raw_action in _MITIGATIONS and not matched:
-            sess.false_positive_actions += 1
+        # Note: false_positive_actions is now tracked in the defense loop (FP threats)
+        # and here for wrong mitigations on real threats (matched=False, action!=FP)
+        if raw_action in _MITIGATIONS and not matched and matched_threat_type is not None:
+            # Only count as FP if we targeted something but matched=False and it wasn't an FP threat
+            # (FP threats already incremented false_positive_actions in the defense loop)
+            pass  # false_positive_actions now tracked centrally in defense loop
         for threat in obs.get("visible_threats", []):
             tid = threat.get("id", "")
             if tid:
@@ -781,14 +963,25 @@ def step(req: StepRequest):
         # Red team
         translated = translate_action(raw_action)
         threat_ctx = (matched_threat_type or "UNKNOWN").upper()
-        adaptive_attacker.observe_defender_action(translated, threat_ctx)
+        sess.attacker.observe_defender_action(translated, threat_ctx)
 
         if s["done"]:
-            contained = sum(1 for t in s["threats"] if t.get("contained"))
-            total     = max(1, len(s["threats"]))
-            adaptive_attacker.on_episode_end(
-                defender_won=(contained / total) >= 0.8,
-                score=round(s["score"], 4),
+            contained    = sum(1 for t in s["threats"] if t.get("contained"))
+            total        = max(1, len(s["threats"]))
+            containment  = contained / total
+            avg_rew      = sum(sess.episode_rewards) / max(1, len(sess.episode_rewards))
+            health_frac  = s["system_health"] / 100.0
+            grader_score = round(
+                max(0.0, min(1.0,
+                    0.50 * containment
+                    + 0.20 * health_frac
+                    + 0.15 * avg_rew
+                )),
+                4,
+            )
+            sess.attacker.on_episode_end(
+                defender_won=containment >= 0.8,
+                score=grader_score,
             )
 
         return safe_response(obs, action=raw_action, reward=reward,
@@ -804,18 +997,27 @@ def step(req: StepRequest):
             _do_reset_session(sess)
             obs = _obs(sess)
         # Reward errors indicate engine failure — return explicit error response
-        error_msg = f"reward_error: {str(e)[:64]}" if "Reward" in str(type(e).__name__) else "internal_error"
+        if isinstance(e, RuntimeError) and "session_state_reset" in str(e):
+            error_msg = "session_state_reset"
+        elif "Reward" in str(type(e).__name__):
+            error_msg = f"reward_error: {str(e)[:64]}"
+        else:
+            error_msg = "internal_error"
         return safe_response(obs, action="", reward=0.0,
                              reason=f"Step failed: {error_msg}. State preserved.",
                              confidence=0.0, error=error_msg)
 
 
 @app.get("/attacker-report")
-def attacker_report():
-    p = adaptive_attacker.defender_profile
+def attacker_report(session_id: str | None = None):
+    sess = _get_session(session_id)
+    if sess is None:
+        return {"error": "session_id required. Call /reset first.", "episode_count": 0}
+    aa = sess.attacker
+    p = aa.defender_profile
     return {
-        "episode_count":     adaptive_attacker.episode_count,
-        "current_strategy":  adaptive_attacker.current_strategy,
+        "episode_count":     aa.episode_count,
+        "current_strategy":  aa.current_strategy,
         "defender_profile": {
             "strategy_label":   p.get_defender_strategy_label(),
             "isolation_rate":   round(p.isolation_rate, 3),
@@ -826,9 +1028,9 @@ def attacker_report():
             "steps_observed":   p.steps_observed,
             "action_counts":    dict(p.action_counts),
         },
-        "strategy_history": adaptive_attacker.strategy_history[-5:],
-        "adaptation_log":   adaptive_attacker.adaptation_log[-10:],
-        "full_report":      adaptive_attacker.get_full_adaptation_report(),
+        "strategy_history": aa.strategy_history[-5:],
+        "adaptation_log":   aa.adaptation_log[-10:],
+        "full_report":      aa.get_full_adaptation_report(),
     }
 
 
@@ -1018,14 +1220,10 @@ def get_analytics(session_id: str | None = None):
         threats_total_spawned = len(sess.state["threats"])
 
         # Avoid division by zero; return 0.0 rates when nothing detected yet
-        mttd = round(total_steps / max(1, n_detected), 2)
-        mttr = round(total_steps / max(1, n_contained), 2)
+        avg_steps_per_detection   = round(total_steps / max(1, n_detected), 2)
+        avg_steps_per_containment = round(total_steps / max(1, n_contained), 2)
 
-        # Detection rate: detected / (detected + remaining hidden)
-        hidden_count = TOTAL_NODES - len(sess.state["scanned_nodes"])
-        detection_rate = round(
-            n_detected / max(1, n_detected + hidden_count), 3
-        )
+        detection_rate = round(n_detected / max(1, threats_total_spawned), 3)
 
         # containment_rate: contained / total_spawned — matches tasks/base.py formula.
         # (Previously used n_detected as denominator, which diverged when threats were never detected.)
@@ -1085,23 +1283,23 @@ def get_analytics(session_id: str | None = None):
             if t.get("stage") == "lateral_movement" and not t.get("contained")
         })
 
-        # Resources remaining: ratio of budget not consumed by action costs
-        task_budget = sess.task_config.get("resource_per_step", 1.0)
-        action_cost = sum(
-            0.4 if a == "isolate_machine" else
-            0.3 if a in ("block_ip", "patch") else
-            0.2 if a.startswith("scan") else 0.0
+        # Resources remaining: fraction of cumulative budget not yet spent.
+        # Total budget = resource_per_step × max_steps; total spent = sum of raw action costs.
+        task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+        _COST_RAW = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
+        total_spent = sum(
+            _COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
             for a in sess.episode_actions_taken
         )
-        total_budget = task_budget * max(1, total_steps)
-        resources_remaining = round(max(0.0, 1.0 - action_cost / max(total_budget, 0.01)), 3)
+        total_budget = max(0.01, task_budget * sess.task_config.get("max_steps", 50))
+        resources_remaining = round(max(0.0, 1.0 - total_spent / total_budget), 3)
 
         return {
             "episode_step":      total_steps,
             "performance_grade": grade,
             "soc_metrics": {
-                "mean_time_to_detect":  mttd,
-                "mean_time_to_respond": mttr,
+                "avg_steps_per_detection":   avg_steps_per_detection,
+                "avg_steps_per_containment": avg_steps_per_containment,
                 "detection_rate":       detection_rate,
                 "containment_rate":     containment_rate,
                 "false_positive_rate":  false_positive_rate,
@@ -1129,7 +1327,7 @@ def get_analytics(session_id: str | None = None):
             },
             "recommended_next_action": recommended,
             "resources_remaining":     resources_remaining,
-            "attacker_strategy": adaptive_attacker.current_strategy,
+            "attacker_strategy": sess.attacker.current_strategy,
         }
 
     except Exception as e:

@@ -12,9 +12,9 @@ tags:
   - mitre-attack
 
 api:
-  reset: POST /reset
+  reset: POST /reset  # returns observation + session_id + task + attacker_strategy
   step:  POST /step
-  state: GET  /state
+  state: GET  /state  # returns observation + episode_info with grader_breakdown
 
 tasks:
   easy:
@@ -65,10 +65,16 @@ observation:
     Threats retain their original type throughout the episode. Stage escalation
     (initial → lateral_movement) changes visibility but does NOT change the correct
     mitigation action — apply the MITRE response for the original threat type.
+    Lateral spread: when a threat escalates to lateral_movement, it may spread to a
+    new node based on lateral_spread_base_prob (per-task config). This can increase
+    total threat count during an episode.
+    False positives: some tasks inject ghost alerts (is_false_positive=True internally)
+    that appear as real threats. Acting on a false positive wastes resources but does
+    not yield containment credit.
   fields:
     - name: visible_threats
       type: list
-      description: "Threats currently visible to the agent. Each entry includes type (original), node, stage (current), age, escalated (bool), and MITRE ATT&CK technique ID. Hidden threats are not included."
+      description: "Threats currently visible to the agent. Each entry includes type (original), node, stage (current), age, escalated (bool), and MITRE ATT&CK technique ID. Hidden threats and false positives appear identically to real threats."
     - name: hidden_node_count
       type: int
       description: "Number of nodes not yet scanned by the agent (0–5)"
@@ -87,6 +93,9 @@ observation:
     - name: done
       type: bool
       description: "True when the episode is over (health <= 0 or max steps reached)"
+    - name: episode_info
+      type: dict
+      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown with the weighted_score formula."
 
 action:
   type: discrete
@@ -95,6 +104,9 @@ action:
     Use SCAN actions to reveal hidden threats before applying mitigations.
     MITRE ATT&CK guides the correct response: T1566→block_ip, T1204/T1486→isolate_machine,
     T1499→patch, T1021→block_ip. Note: Correct action depends on severity and stage.
+    WARNING: Some visible threats may be false positives injected by the environment.
+    False positive threats appear identical to real threats. Acting on a false positive
+    removes it from view but yields no containment credit and counts against resources.
   actions:
     - name: block_ip
       description: "Neutralises phishing (T1566) and lateral movement (T1021) threats"
@@ -119,11 +131,12 @@ reward:
   range: [0.0, 1.0]
   description: >
     Reward is normalized to [0.0, 1.0] via formula: (raw + 2.0) / 4.0, clamped to [0, 1].
-    Correct mitigation: raw 1.0 + (system_health / 100) + 0.1 early-neutralization bonus (threat age < 3).
-    Wrong mitigation: raw -0.5 - health penalty factor.
-    Ignore: raw -1.5.
-    Scan reveals threat: raw +0.02.
-    Scan finds nothing: raw -0.01.
+    Correct mitigation: raw 1.0 → 0.750 (early bonus if threat age < 3: raw 1.1 → 0.775).
+    Wrong mitigation: raw -0.5 → 0.375.
+    Ignore: raw -1.5 → 0.125.
+    Scan reveals threat: raw 0.02 → 0.505.
+    Scan finds nothing: raw -0.3 → 0.425.
+    Correct action is determined solely by the threat's original_type. Severity and stage do not change the MITRE mitigation.
 
 termination:
   conditions:
@@ -176,5 +189,5 @@ mitre_attack:
 
 docker:
   port: 7860
-  health_check: "/state"
+  health_check: "/"
   entrypoint: "uvicorn app:app --host 0.0.0.0 --port 7860"
