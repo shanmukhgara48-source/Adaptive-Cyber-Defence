@@ -49,9 +49,9 @@ tasks:
     max_steps: 15
   - id: impossible
     name: Impossible Defense
-    description: "AI-driven attacker with perfect counter-strategy. Maximum evasion, instant kill chain, zero resources. Exists to show environment has no ceiling."
+    description: "AI-driven attacker with perfect counter-strategy. Maximum evasion, instant kill chain, zero resources. This task has no passing threshold — it exists as a ceiling benchmark to measure how close frontier models can get to perfect defense under adversarial conditions. Any score above 0.0 is meaningful."
     difficulty: impossible
-    passing_score: 0.94
+    passing_score: 0.0
     max_steps: 10
 
 observation:

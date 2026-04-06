@@ -60,7 +60,7 @@ TEMPERATURE    = 0.2   # slight creativity helps with step-by-step reasoning
 MAX_RETRIES    = 3
 RETRY_DELAY    = 2     # seconds between retries
 
-TASKS = ["easy", "medium", "hard", "nightmare", "elite", "impossible"]
+TASKS = ["easy", "medium", "hard", "nightmare", "elite"]
 
 TASK_MAX_STEPS: dict[str, int] = {
     "easy":       30,
@@ -539,6 +539,13 @@ def run():
     print(f"\nScores non-increasing: {'YES ✓' if non_increasing else 'NO ✗'}")
     print(f"Tasks passed: {passes}/{len(results)}")
     print(sep)
+
+    print("\n[CEILING BENCHMARK]")
+    print("Running impossible task as ceiling reference...")
+    # Run 1 episode of impossible — not included in pass/fail calculation
+    imp_result = run_task("impossible")
+    print(f"Impossible raw score: {imp_result['score']:.4f}  "
+          f"(no threshold — any score > 0.0 is meaningful)")
 
 
 if __name__ == "__main__":

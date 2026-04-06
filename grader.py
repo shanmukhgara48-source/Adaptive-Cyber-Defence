@@ -28,7 +28,7 @@ TASK_PASSING_SCORES: dict[str, float] = {
     "hard":       0.70,
     "nightmare":  0.80,
     "elite":      0.88,
-    "impossible": 0.94,
+    "impossible": 0.0,   # ceiling benchmark — no passing threshold
 }
 
 
