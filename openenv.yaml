@@ -60,13 +60,10 @@ observation:
     Partially observable environment. Threats are hidden on network nodes and must be
     discovered via SCAN actions or by waiting for natural aging or stage escalation.
     The agent NEVER sees the internal threat type or MITRE technique ID directly.
-    Instead, each visible threat exposes behavioral IOC (Indicator of Compromise)
-    signals that the agent must reason about to infer the correct mitigation:
-      - High packets_per_second (> ~500)         → likely volumetric flood → patch
-      - High outbound_data_bytes (> ~2000)        → likely data exfil/staging → isolate_machine
-      - High lateral_connection_count (> ~10)     → likely network traversal → block_ip
-      - High failed_auth_attempts + low lateral   → likely credential attack → block_ip
-      - High unusual_process_count + moderate ob  → likely code execution → isolate_machine
+    Each visible threat exposes behavioral IOC signals. Agents must reason about
+    the combination of signals to infer attack class and select the correct
+    mitigation. No ground-truth labels or fixed thresholds are provided. The
+    environment rewards correct classification from behavioral evidence.
     False positives appear as real alerts with weaker, ambiguous IOC signals.
     Lateral spread: when a threat escalates to lateral_movement, it may spawn a
     child threat on an adjacent node. The parent's affected_node_count increments.

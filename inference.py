@@ -106,13 +106,18 @@ Available actions:
   DO_NOTHING      — take no action. Heavy penalty: -10 health. Never use unless resources
     are completely exhausted.
 
-IOC interpretation guide (learn these patterns):
-  packets_per_second > 500          → volumetric flood (DoS)         → PATCH_VULNERABILITY
-  outbound_data_bytes > 2000        → data staging or exfiltration    → ISOLATE_NODE
-  unusual_process_count > 5         → malicious code execution        → ISOLATE_NODE
-  lateral_connection_count > 8      → attacker traversing the network → BLOCK_IP
-  failed_auth_attempts > 20 + pps<20 → credential harvesting          → BLOCK_IP
-  spread_rate > 0.7 + outbound high  → ransomware encryption spread   → ISOLATE_NODE
+Reasoning approach:
+Each threat exposes behavioral IOC signals. Your job is to classify the attack from
+these signals and choose the correct mitigation. Consider:
+- Which IOCs are elevated versus baseline?
+- What combination of signals suggests the attack class?
+- High network volume suggests a different threat class than high authentication
+  failures or high data egress.
+- Lateral spread indicators suggest different mitigations than encryption or
+  exfiltration indicators.
+- Severity and detection_confidence tell you urgency, not attack type.
+- A threat with ambiguous IOCs may be a false positive — consider the cost of
+  acting versus waiting for more signal via SCAN.
 
 Think step by step before answering:
   1. What does each threat's IOC profile suggest about its attack class?
@@ -123,10 +128,10 @@ Reply ONLY with a single JSON object — no markdown, no prose:
 {"action": "ACTION_NAME", "target": "node_id", "reasoning": "one sentence"}
 
 Examples of valid responses:
-{"action": "ISOLATE_MACHINE", "target": "node_3", "reasoning": "outbound_data_bytes=35000 and unusual_process_count=18 — active ransomware pattern"}
-{"action": "BLOCK_IP", "target": "node_1", "reasoning": "failed_auth=140 with low pps — credential harvesting pattern"}
-{"action": "SCAN", "target": "node_4", "reasoning": "node_4 unscanned, hidden_threat_count=2"}
-{"action": "PATCH", "target": "node_2", "reasoning": "pps=4500 — volumetric DoS pattern"}
+{"action": "ISOLATE_MACHINE", "target": "node_3", "reasoning": "combined high outbound bytes and process anomalies with rapid spread — encryption behavior pattern, isolate to stop propagation"}
+{"action": "BLOCK_IP", "target": "node_1", "reasoning": "authentication failures dominate with minimal network volume — credential attack pattern, block source IP"}
+{"action": "SCAN", "target": "node_4", "reasoning": "hidden_threat_count=2 but node_4 not yet scanned — need visibility before committing resources"}
+{"action": "PATCH", "target": "node_2", "reasoning": "network volume is the dominant signal with minimal auth or process anomalies — volumetric pattern, patch the service"}
 """
 
 # ---------------------------------------------------------------------------
