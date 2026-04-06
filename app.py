@@ -349,7 +349,7 @@ class Session:
     false_positive_actions: int = 0
     containment_events: list = field(default_factory=list)
     attack_plan: dict = field(default_factory=dict)
-    rng: random.Random = field(default_factory=random.Random)
+    rng: random.Random = field(default_factory=lambda: random.Random(0))  # overwritten at reset()
     attacker: object = field(default_factory=lambda: None)
 
 
@@ -1125,6 +1125,10 @@ def step(req: StepRequest):
 
         # ── DEFENSE ──
         else:
+            # Pre-roll resource-exhaustion dice unconditionally so the session RNG
+            # advances exactly once per defense step, keeping the sequence stable
+            # regardless of whether _resource_exhausted is True this step.
+            _exhaust_roll = sess.rng.random()
             for t in s["threats"]:
                 if t["visible"] and not t.get("contained"):
                     # Use original_type for MITRE lookup — type is preserved even after
@@ -1137,7 +1141,7 @@ def step(req: StepRequest):
                             matched_threat_type = t["type"]
                             matched = False  # treated as wrong action for reward purposes
                             sess.false_positive_actions += 1
-                        elif _resource_exhausted and sess.rng.random() < 0.5:
+                        elif _resource_exhausted and _exhaust_roll < 0.5:
                             # Resource exhausted: 50% chance action fails — forces budget planning
                             matched_threat_type = t["type"]
                             matched = False  # action attempted but resource-starved response failed
