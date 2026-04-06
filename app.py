@@ -34,6 +34,11 @@ from tasks.hard import HardTask
 from tasks.nightmare import NightmareTask
 from tasks.elite import EliteTask
 from tasks.impossible import ImpossibleTask
+from grader import (
+    TASK_PASSING_SCORES,
+    compute_speed_bonus as _compute_speed_bonus,
+    compute_grader_score as _grader_formula,
+)
 
 TASK_MAP = {
     "easy":       EasyTask,
@@ -265,12 +270,12 @@ def _evolve_iocs(t: dict, rng: random.Random) -> None:
     )
 
 TASKS = [
-    {"id": 1, "difficulty": "easy",       "passing_score": 0.50, "goal": "Three simultaneous attacks. High detection, generous resources. Contain all before lateral spread."},
-    {"id": 2, "difficulty": "medium",     "passing_score": 0.60, "goal": "Two intrusions with limited resources, FP noise. Prioritise threats."},
-    {"id": 3, "difficulty": "hard",       "passing_score": 0.45, "goal": "APT across 5 nodes. Low detection, scarce resources, fast progression."},
-    {"id": 4, "difficulty": "nightmare",  "passing_score": 0.25, "goal": "Nation-state APT. Near-zero detection, 15 steps. Designed for frontier LLMs."},
-    {"id": 5, "difficulty": "elite",      "passing_score": 0.20, "goal": "Persistent threat with insider access. All nodes pre-compromised. Kill chain advances every step."},
-    {"id": 6, "difficulty": "impossible", "passing_score": 0.10, "goal": "AI-driven attacker with perfect counter-strategy. Exists to show environment has no ceiling."},
+    {"id": 1, "difficulty": "easy",       "passing_score": TASK_PASSING_SCORES["easy"],       "goal": "Three simultaneous attacks. High detection, generous resources. Contain all before lateral spread."},
+    {"id": 2, "difficulty": "medium",     "passing_score": TASK_PASSING_SCORES["medium"],     "goal": "Two intrusions with limited resources, FP noise. Prioritise threats."},
+    {"id": 3, "difficulty": "hard",       "passing_score": TASK_PASSING_SCORES["hard"],       "goal": "APT across 5 nodes. Low detection, scarce resources, fast progression."},
+    {"id": 4, "difficulty": "nightmare",  "passing_score": TASK_PASSING_SCORES["nightmare"],  "goal": "Nation-state APT. Near-zero detection, 15 steps. Designed for frontier LLMs."},
+    {"id": 5, "difficulty": "elite",      "passing_score": TASK_PASSING_SCORES["elite"],      "goal": "Persistent threat with insider access. All nodes pre-compromised. Kill chain advances every step."},
+    {"id": 6, "difficulty": "impossible", "passing_score": TASK_PASSING_SCORES["impossible"], "goal": "AI-driven attacker with perfect counter-strategy. Exists to show environment has no ceiling."},
 ]
 
 
@@ -402,52 +407,20 @@ def _initial_severity(t_type: str, rng: random.Random) -> float:
     return round(rng.uniform(lo, hi), 3)
 
 
-def _compute_speed_bonus(containment_events: list) -> float:
-    """Compute speed bonus: mean of (1.0 if age<3, 0.5 if age<5, else 0.0) per contained threat."""
-    if not containment_events:
-        return 0.0
-    scores = []
-    for ev in containment_events:
-        age = ev.get("age_at_containment", 99)
-        if age < 3:
-            scores.append(1.0)
-        elif age < 5:
-            scores.append(0.5)
-        else:
-            scores.append(0.0)
-    return round(sum(scores) / len(scores), 4)
-
-
 def _compute_grader_score(sess: "Session") -> float:
-    """Single authoritative grader formula used by /state, /step, /analytics, and on_episode_end.
-
-    Score = 0.50 × containment_rate
-          + 0.20 × critical_health   (system_health / 100)
-          + 0.15 × resource_efficiency
-          + 0.15 × speed_bonus
-    """
+    """Extract components from session state, delegate formula to grader.py."""
     s = sess.state
     _contained = sum(1 for t in s["threats"] if t.get("contained") and not t.get("is_false_positive"))
     _total = max(1, sum(1 for t in s["threats"] if not t.get("is_false_positive")))
     containment_rate = _contained / _total
     critical_health = s["system_health"] / 100.0
-    # Resource efficiency
     _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
     _cost_raw = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
     _total_spent = sum(_cost_raw.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
     _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
     resource_efficiency = max(0.0, 1.0 - _total_spent / _total_budget)
     speed_bonus = _compute_speed_bonus(sess.containment_events)
-    weighted = round(
-        max(0.0, min(1.0,
-            0.50 * containment_rate
-            + 0.20 * critical_health
-            + 0.15 * resource_efficiency
-            + 0.15 * speed_bonus
-        )),
-        4,
-    )
-    return weighted
+    return _grader_formula(containment_rate, critical_health, resource_efficiency, speed_bonus)
 
 
 def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) -> list:

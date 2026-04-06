@@ -3,6 +3,7 @@ import os
 import time
 import requests
 from openai import OpenAI
+from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_formula
 
 # ---------------------------------------------------------------------------
 # Environment configuration
@@ -481,12 +482,7 @@ def run_task(task_name: str) -> dict:
     except Exception:
         speed_bonus = 0.0
 
-    score = max(0.0, min(1.0,
-        0.50 * containment_rate
-        + 0.20 * critical_health
-        + 0.15 * avg_resource_left
-        + 0.15 * speed_bonus
-    ))
+    score = _compute_grader_formula(containment_rate, critical_health, avg_resource_left, speed_bonus)
 
     return {
         "task_id":           task_name,
@@ -505,14 +501,8 @@ def run_task(task_name: str) -> dict:
 # Main: run all tasks and print summary
 # ---------------------------------------------------------------------------
 
-TASK_THRESHOLDS: dict[str, float] = {
-    "easy":       0.50,
-    "medium":     0.60,
-    "hard":       0.45,
-    "nightmare":  0.25,
-    "elite":      0.20,
-    "impossible": 0.10,
-}
+# Single source of truth — imported from grader.py
+TASK_THRESHOLDS: dict[str, float] = TASK_PASSING_SCORES
 
 
 def run():

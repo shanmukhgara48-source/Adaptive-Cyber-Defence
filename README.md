@@ -24,13 +24,14 @@ The environment simulates a 5-node corporate network under continuous attack. Fi
 
 - **FastAPI backend** — lightweight, production-grade REST API
 - **Partial observability** — threats are hidden; `scan_node_X` actions reveal them
-- **SCAN-based discovery** — 5 scannable nodes, coverage tracked per episode
-- **Deterministic reward system** — clamped to `[-2.0, 2.0]`, no NaN/Inf
-- **Threat lifecycle** — threats age, escalate, and cause damage if ignored
-- **MITRE ATT&CK mapping** — each threat type maps to a real ATT&CK technique
-- **Robust error handling** — never crashes; always returns complete JSON
-- **Stress-tested** — 400+ adversarial test cases across 8 categories
-- **Auto-healing state** — detects and recovers from state corruption automatically
+- **Topology-constrained lateral spread** — threats spread along a 5-node graph, not randomly
+- **Adaptive red-team attacker** — tracks defender behavior (isolation rate, block rate, scan rate) and switches strategy (APT, RANSOMWARE, INSIDER_THREAT, etc.) each episode. Modifies detection probability, stage progression speed, and spread rate
+- **Resource budget enforcement** — actions degrade at 50% effectiveness when SOC budget is exhausted
+- **Deterministic reward system** — normalized to `[0.0, 1.0]` via `(raw + 2.0) / 4.0`
+- **Unified grader formula** — `0.50×containment + 0.20×health + 0.15×resource + 0.15×speed` used consistently in `/state`, `/step`, `/analytics`
+- **MITRE ATT&CK mapping** — each threat type maps to a real ATT&CK technique; correct action determined by `original_type` (preserved through stage escalation)
+- **Robust error handling** — never crashes; always returns complete JSON with HTTP 200
+- **760+ tests** — unit tests (OOP simulation layer) + 22 adversarial live-server tests
 
 ---
 
@@ -48,7 +49,7 @@ The environment simulates a 5-node corporate network under continuous attack. Fi
 ```json
 {
   "visible_threats":   [{"type": "malware", "node": "node_2", "stage": "initial", "age": 2}],
-  "hidden_node_count": 3,
+  "hidden_threat_count": 3,
   "scan_coverage":     0.4,
   "system_health":     85,
   "score":             0.52,
@@ -64,7 +65,7 @@ The environment simulates a 5-node corporate network under continuous attack. Fi
   "action":            "block_ip",
   "reward":            0.75,
   "visible_threats":   [],
-  "hidden_node_count": 3,
+  "hidden_threat_count": 3,
   "scan_coverage":     0.4,
   "system_health":     85,
   "score":             0.62,
@@ -206,12 +207,12 @@ Grader: `0.50×containment + 0.20×critical_health + 0.15×avg_resource_left + 0
 
 | Task       | Max Steps | Threshold | Notes                                         |
 |------------|-----------|-----------|-----------------------------------------------|
-| easy       | 30        | 0.50      | 3 threats, high detection, generous resources |
-| medium     | 50        | 0.60      | 2 threats, FP noise, limited budget           |
-| hard       | 30        | 0.45      | 5 threats, APT evasion, scarce resources      |
-| nightmare  | 15        | 0.25      | 5 threats, near-zero detection                |
-| elite      | 15        | 0.20      | All nodes pre-compromised, insider threat     |
-| impossible | 10        | 0.10      | AI attacker, no ceiling                       |
+| easy       | 30        | 0.40      | 3 threats, high detection, generous resources |
+| medium     | 50        | 0.55      | 2 threats, FP noise, limited budget           |
+| hard       | 30        | 0.70      | 5 threats, APT evasion, scarce resources      |
+| nightmare  | 15        | 0.80      | 5 threats, near-zero detection                |
+| elite      | 15        | 0.88      | All nodes pre-compromised, insider threat     |
+| impossible | 10        | 0.94      | AI attacker, no ceiling                       |
 
 To reproduce:
 
@@ -244,10 +245,10 @@ Each task is scored on a scale of 0.0–1.0 using this formula:
 - episode_score = 0.50×0.80 + 0.20×0.90 + 0.15×0.70 + 0.15×0.50
 - episode_score = 0.40 + 0.18 + 0.105 + 0.075 = 0.76
 
-Passing thresholds (difficulty ladder — higher bar requires better performance):
-- easy:       0.50
-- medium:     0.60  (higher bar than easy — requires better containment)
-- hard:       0.45  (lower bar — genuinely harder to achieve)
-- nightmare:  0.25
-- elite:      0.20
-- impossible: 0.10
+Passing thresholds (strictly monotonically increasing with difficulty):
+- easy:       0.40
+- medium:     0.55
+- hard:       0.70
+- nightmare:  0.80
+- elite:      0.88
+- impossible: 0.94
