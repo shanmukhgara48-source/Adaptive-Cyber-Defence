@@ -75,7 +75,7 @@ observation:
       type: list
       description: >
         Threats currently visible to the agent. Each entry contains ONLY behavioral
-        IOC signals — threat type, original_type, MITRE technique ID, and tactic
+        IOC signals — threat classification labels and MITRE technique names
         are intentionally withheld. The agent must classify and respond based on:
         id (opaque), node, stage (initial|lateral_movement), age, dwell_time_steps,
         escalated (bool), severity (0.0–1.0), detection_confidence (0.0–1.0),
@@ -132,8 +132,11 @@ action:
   description: >
     9 discrete actions. Defense actions only work against visible threats.
     Use SCAN actions to reveal hidden threats before applying mitigations.
-    MITRE ATT&CK guides the correct response: T1566→block_ip, T1204/T1486→isolate_machine,
-    T1499→patch, T1021→block_ip. Note: Correct action depends on severity and stage.
+    The correct mitigation must be inferred from behavioral
+    IOC patterns in the observation. No ground-truth labels
+    are provided. Agents that reason about packet rates,
+    auth failures, lateral connections, and outbound bytes
+    will consistently outperform agents that guess.
     WARNING: Some visible threats may be false positives injected by the environment.
     False positive threats appear identical to real threats. Acting on a false positive
     removes it from view but yields no containment credit and counts against resources.
@@ -185,7 +188,9 @@ reward:
       Scan already-contained node      → -0.20
       Scan while resources exhausted   → -0.30
     Agents must use behavioral IOCs to decide WHERE to scan rather than scanning blindly.
-    Correct action is determined solely by the threat's original_type. Severity and stage do not change the MITRE mitigation.
+    Correct action is inferred from behavioral IOC signals.
+    The environment does not expose threat type — the agent
+    must classify each threat from its observable indicators.
 
 termination:
   conditions:
