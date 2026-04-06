@@ -76,13 +76,12 @@ TASK_MAX_STEPS: dict[str, int] = {
 # the environment expects lowercase snake_case strings.
 ACTION_MAP: dict[str, str] = {
     "ISOLATE_NODE":        "isolate_machine",
+    "ISOLATE_MACHINE":     "isolate_machine",
     "BLOCK_IP":            "block_ip",
+    "PATCH":               "patch",
     "PATCH_VULNERABILITY": "patch",
     "DO_NOTHING":          "ignore",
-    "RESTORE_NODE":        "patch",           # closest available: service remediation
-    "REVOKE_CREDENTIALS":  "block_ip",        # credential harvesting: block source
-    "DECRYPT":             "isolate_machine", # ransomware response: isolate the node
-    "QUARANTINE_SERVICE":  "isolate_machine",
+    "IGNORE":              "ignore",
     # SCAN is handled separately — requires the target node field
 }
 
@@ -96,15 +95,16 @@ behavioral Indicators of Compromise (IOCs) for each active alert and must infer 
 kind of attack is occurring, then choose the single best defensive action.
 
 Available actions:
-  ISOLATE_NODE        — cut a compromised machine off the network (stops malware/ransomware spread)
-  BLOCK_IP            — block the attacker's source IP (stops phishing, credential attacks, lateral movement)
-  SCAN                — reveal hidden threats on a specific node (use when coverage < 100%)
-  PATCH_VULNERABILITY — apply a security patch to a service (stops volumetric/DoS attacks)
-  RESTORE_NODE        — restore a node to clean state (use after containment to recover health)
-  REVOKE_CREDENTIALS  — invalidate stolen credentials (use when auth failures are high)
-  DECRYPT             — attempt decryption key recovery (ransomware last resort)
-  QUARANTINE_SERVICE  — isolate a single service without full node isolation
-  DO_NOTHING          — take no action this step (heavy penalty: -10 health, -1.5 reward)
+  ISOLATE_MACHINE — cut a compromised machine off the network. Use when: outbound_data_bytes high,
+    unusual_process_count high, spread_rate high (malware, ransomware patterns)
+  BLOCK_IP        — block the attacker source IP. Use when: lateral_connection_count high,
+    failed_auth_attempts high (lateral movement, credential attacks)
+  PATCH           — apply security patch to stop volumetric attack. Use when:
+    packets_per_second very high (DoS pattern)
+  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats on a specific node. Use when
+    hidden_threat_count > 0 and that node is unscanned
+  DO_NOTHING      — take no action. Heavy penalty: -10 health. Never use unless resources
+    are completely exhausted.
 
 IOC interpretation guide (learn these patterns):
   packets_per_second > 500          → volumetric flood (DoS)         → PATCH_VULNERABILITY
@@ -123,10 +123,10 @@ Reply ONLY with a single JSON object — no markdown, no prose:
 {"action": "ACTION_NAME", "target": "node_id", "reasoning": "one sentence"}
 
 Examples of valid responses:
-{"action": "ISOLATE_NODE", "target": "node_3", "reasoning": "outbound_data_bytes=35000 and procs=18 indicate active ransomware encryption — isolate immediately"}
-{"action": "BLOCK_IP", "target": "node_1", "reasoning": "failed_auth=140 with pps=3 and no lateral spread is a credential harvesting pattern — block the source"}
-{"action": "SCAN", "target": "node_4", "reasoning": "node_4 unscanned and hidden_threat_count=2 — need visibility before acting"}
-{"action": "PATCH_VULNERABILITY", "target": "node_2", "reasoning": "pps=4500 far exceeds normal traffic — volumetric DoS pattern requires patch"}
+{"action": "ISOLATE_MACHINE", "target": "node_3", "reasoning": "outbound_data_bytes=35000 and unusual_process_count=18 — active ransomware pattern"}
+{"action": "BLOCK_IP", "target": "node_1", "reasoning": "failed_auth=140 with low pps — credential harvesting pattern"}
+{"action": "SCAN", "target": "node_4", "reasoning": "node_4 unscanned, hidden_threat_count=2"}
+{"action": "PATCH", "target": "node_2", "reasoning": "pps=4500 — volumetric DoS pattern"}
 """
 
 # ---------------------------------------------------------------------------
