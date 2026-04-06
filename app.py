@@ -864,25 +864,19 @@ def _obs(sess: Session) -> dict:
 
 
 def _build_reason(action: str, matched: bool, threat_type: str | None, early: bool) -> tuple[str, float]:
-    """Return (reason_string, confidence)."""
+    """Return (reason_string, confidence) — no ground-truth threat information leaked."""
     if action.startswith("scan"):
-        return ("Scanning reveals hidden threats before they escalate. Essential under partial observability.", 0.85)
+        return ("Action processed.", 0.85)
 
     if threat_type is None:
-        return ("No visible threat to act on. Scanning unexplored nodes is recommended.", 0.60)
+        return ("Action processed.", 0.60)
 
-    ex = EXPLAIN.get(threat_type, {})
     if matched:
-        base_conf = 0.92
-        reason = ex.get("correct", f"Correct mitigation for {threat_type} ({MITRE_MAP.get(threat_type, '')}).")
-        if early:
-            reason += " Early neutralization bonus applied."
-            base_conf = min(1.0, base_conf + 0.05)
-        return (reason, base_conf)
+        return ("Action applied. Monitoring threat indicators.", 0.92)
     elif action == "ignore":
-        return (ex.get("ignore", f"Ignoring {threat_type} allows escalation."), 0.20)
+        return ("No action taken. System health degraded.", 0.20)
     else:
-        return (ex.get("wrong", f"Wrong mitigation for {threat_type}. Check MITRE technique {MITRE_MAP.get(threat_type, '')}."), 0.35)
+        return ("Action did not contain the threat. Review behavioral signals.", 0.35)
 
 
 def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None):
@@ -1184,8 +1178,11 @@ def step(req: StepRequest):
                             else:
                                 scan_revealed_real = True
                 reason, confidence = _build_reason(raw_action, False, None, False)
-                if scan_revealed_real or scan_revealed_fp:
-                    reason = f"Scan of {node} revealed a hidden threat. Partial observability lifted for this node."
+                if scan_revealed_fp:
+                    reason = "Scan complete. Low-severity anomaly detected."
+                    confidence = 0.90
+                elif scan_revealed_real:
+                    reason = "Scan complete. Threat indicators present."
                     confidence = 0.90
                 else:
                     # Nothing revealed — check if node already fully dealt with
@@ -1193,7 +1190,7 @@ def step(req: StepRequest):
                         t["node"] == node and t.get("contained") and not t.get("is_false_positive")
                         for t in s["threats"]
                     )
-                    reason = f"Scan of {node} found no new threats. Coverage improved."
+                    reason = "Scan complete. No active indicators found."
                     confidence = 0.75
                     scan_found_nothing = True
             else:
@@ -1222,7 +1219,7 @@ def step(req: StepRequest):
                             # Resource exhausted: 50% chance action fails — forces budget planning
                             matched_threat_type = t["type"]
                             matched = False  # action attempted but resource-starved response failed
-                            reason = f"Resources exhausted. {raw_action} on {t['type']} failed (50% degraded effectiveness). Containment unsuccessful."
+                            reason = "Action failed. Resource budget depleted."
                             confidence = 0.30
                         else:
                             t["contained"] = True
