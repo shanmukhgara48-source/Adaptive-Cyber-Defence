@@ -20,7 +20,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 from models import Observation
@@ -895,6 +895,12 @@ class StateRequest(BaseModel):
 @app.get("/")
 def root():
     return {"message": "Adaptive Cyber Defense API v2.0 — OpenEnv compatible"}
+
+
+@app.get("/_stcore/health")
+def health():
+    """Liveness probe for HF Spaces and OpenEnv evaluators. Must return plain-text 'ok'."""
+    return Response(content="ok", media_type="text/plain")
 
 
 @app.get("/tasks")
