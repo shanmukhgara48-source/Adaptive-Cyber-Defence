@@ -1,3 +1,4 @@
+venv/
 __pycache__
 **/__pycache__
 *.pyc
@@ -6,3 +7,6 @@ __pycache__
 .env
 *.log
 node_modules
+.git/
+training/ql_table.json
+*.png
