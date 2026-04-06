@@ -141,14 +141,19 @@ action:
       description: "Scan node_5 to reveal hidden threats"
 
 reward:
-  range: [0.0, 1.0]
+  range: [-1.0, 1.0]
   description: >
-    Reward is normalized to [0.0, 1.0] via formula: (raw + 2.0) / 4.0, clamped to [0, 1].
-    Correct mitigation: raw 1.0 → 0.750 (early bonus if threat age < 3: raw 1.1 → 0.775).
-    Wrong mitigation: raw -0.5 → 0.375.
-    Ignore: raw -1.5 → 0.125.
-    Scan reveals threat: raw 0.02 → 0.505.
-    Scan finds nothing: raw -0.3 → 0.425.
+    Mitigation actions are normalized via (raw + 2.0) / 4.0 → [0.0, 1.0]:
+      Correct mitigation: raw 1.0 → 0.750 (early bonus if threat age < 3: raw 1.1 → 0.775).
+      Wrong mitigation:   raw -0.5 → 0.375.
+      Ignore:             raw -1.5 → 0.125.
+    Scan rewards are direct values (not normalized) to penalise wasted scans:
+      Scan reveals real threat         → +0.25
+      Scan reveals false positive      → -0.05
+      Scan clean node (nothing found)  → -0.10
+      Scan already-contained node      → -0.20
+      Scan while resources exhausted   → -0.30
+    Agents must use behavioral IOCs to decide WHERE to scan rather than scanning blindly.
     Correct action is determined solely by the threat's original_type. Severity and stage do not change the MITRE mitigation.
 
 termination:

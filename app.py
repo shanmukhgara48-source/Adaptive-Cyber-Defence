@@ -1076,6 +1076,9 @@ def step(req: StepRequest):
         early_bonus = False
         matched_threat_type = None
         scan_found_nothing = False
+        scan_revealed_real = False       # scan uncovered at least one genuine threat
+        scan_revealed_fp   = False       # scan uncovered only false-positive alerts
+        scan_node_already_contained = False  # node has only already-contained threats
 
         # ── RESOURCE CHECK ──
         # Compute current resources remaining to enforce budget constraints.
@@ -1091,21 +1094,28 @@ def step(req: StepRequest):
             node = raw_action[len("scan_"):] if raw_action.startswith("scan_") else ""
             if node in NODES:
                 s["scanned_nodes"].add(node)
-                # Scan effectiveness also degrades at 50% when budget exhausted
+                # Scan effectiveness degrades at 50% when budget exhausted
                 false_neg = sess.task_config.get("false_negative_rate", 0.0)
                 if _resource_exhausted:
-                    false_neg = min(0.99, false_neg + 0.5)  # scan less reliable when overloaded
-                revealed = False
+                    false_neg = min(0.99, false_neg + 0.5)
                 for t in s["threats"]:
                     if t["node"] == node and not t["visible"] and not t.get("contained"):
                         if sess.rng.random() > false_neg:
                             t["visible"] = True
-                            revealed = True
+                            if t.get("is_false_positive"):
+                                scan_revealed_fp = True
+                            else:
+                                scan_revealed_real = True
                 reason, confidence = _build_reason(raw_action, False, None, False)
-                if revealed:
+                if scan_revealed_real or scan_revealed_fp:
                     reason = f"Scan of {node} revealed a hidden threat. Partial observability lifted for this node."
                     confidence = 0.90
                 else:
+                    # Nothing revealed — check if node already fully dealt with
+                    scan_node_already_contained = any(
+                        t["node"] == node and t.get("contained") and not t.get("is_false_positive")
+                        for t in s["threats"]
+                    )
                     reason = f"Scan of {node} found no new threats. Coverage improved."
                     confidence = 0.75
                     scan_found_nothing = True
@@ -1169,14 +1179,27 @@ def step(req: StepRequest):
         _clamp_health(sess)
 
         # Reward authority: MITRE-aligned lookup table.
-        # Normalized via _clamp_reward((r + 2.0) / 4.0) → [0.0, 1.0].
-        # correct:      raw 1.0 (+0.1 early bonus if age<3) → 0.750 (0.775)
-        # wrong:        raw -0.5                            → 0.375
-        # ignore:       raw -1.5                            → 0.125
-        # scan reveal:  raw 0.02                            → 0.505
-        # scan empty:   raw -0.3                            → 0.425
+        # Mitigation actions normalized via _clamp_reward((r + 2.0) / 4.0) → [0.0, 1.0]:
+        #   correct:      raw 1.0 (+0.1 early bonus if age<3) → 0.750 (0.775)
+        #   wrong:        raw -0.5                            → 0.375
+        #   ignore:       raw -1.5                            → 0.125
+        # Scan rewards are direct (not normalized) to create genuine cost for wasted scans:
+        #   real threat revealed                              → +0.25
+        #   false positive revealed                          → -0.05
+        #   clean node (nothing found)                       → -0.10
+        #   already-contained node (threat dealt with)       → -0.20
+        #   scan while resources exhausted                   → -0.30
         if raw_action.startswith("scan"):
-            reward = _clamp_reward(0.02) if not scan_found_nothing else _clamp_reward(-0.3)
+            if _resource_exhausted:
+                reward = -0.30
+            elif scan_revealed_real:
+                reward = +0.25
+            elif scan_revealed_fp:
+                reward = -0.05
+            elif scan_node_already_contained:
+                reward = -0.20
+            else:
+                reward = -0.10  # clean node, nothing to find
         elif raw_action == "ignore":
             reward = _clamp_reward(-1.5)
         elif raw_action in ("block_ip", "isolate_machine", "patch"):
