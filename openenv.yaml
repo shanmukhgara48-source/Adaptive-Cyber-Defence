@@ -17,39 +17,37 @@ api:
   state: GET  /state  # returns observation + episode_info with grader_breakdown
 
 tasks:
-  easy:
+  - id: easy
     name: Easy Defense
     description: "Three simultaneous attacks on workstations. High detection probability, generous resources, slow progression. Goal: contain all threats before lateral spread."
     difficulty: easy
     passing_score: 0.40
     max_steps: 30
-  medium:
+  - id: medium
     name: Medium Defense
     description: "Two simultaneous intrusions with limited SOC resources. Moderate detection, false-positive noise. Requires threat prioritisation."
     difficulty: medium
     passing_score: 0.55
     max_steps: 50
-  hard:
+  - id: hard
     name: Hard Defense
     description: "Handle multi-stage attacks across all 5 nodes simultaneously with limited scan budget"
     difficulty: hard
     passing_score: 0.70
     max_steps: 30
-  nightmare:
+  - id: nightmare
     name: Nightmare Defense
     description: "Nation-state APT. All 5 nodes under simultaneous attack. Near-zero detection, maximum evasion, fastest kill chain. Designed to genuinely challenge frontier LLMs."
     difficulty: nightmare
     passing_score: 0.80
     max_steps: 15
-
-  elite:
+  - id: elite
     name: Elite Defense
     description: "Nation-state persistent threat with insider access. All nodes pre-compromised. Near-zero detection. Kill chain advances every step."
     difficulty: elite
     passing_score: 0.88
     max_steps: 15
-
-  impossible:
+  - id: impossible
     name: Impossible Defense
     description: "AI-driven attacker with perfect counter-strategy. Maximum evasion, instant kill chain, zero resources. Exists to show environment has no ceiling."
     difficulty: impossible
@@ -110,6 +108,25 @@ observation:
       type: dict
       description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown."
 
+observation_space:
+  type: dict
+  fields:
+    - name: active_threats
+      type: list
+      description: "Threats with behavioral IOCs only — no type field"
+    - name: network_state
+      type: dict
+      description: "Per-node health, status, criticality"
+    - name: resources
+      type: dict
+      description: "Remaining scan capacity and response slots"
+    - name: step
+      type: int
+      description: "Current time step"
+    - name: score
+      type: float
+      description: "Cumulative reward so far"
+
 action:
   type: discrete
   description: >
@@ -139,6 +156,20 @@ action:
       description: "Scan node_4 to reveal hidden threats"
     - name: scan_node_5
       description: "Scan node_5 to reveal hidden threats"
+
+action_space:
+  type: discrete
+  actions:
+    - ISOLATE_NODE
+    - BLOCK_IP
+    - SCAN
+    - PATCH_SYSTEM
+    - IGNORE
+    - scan_node_1
+    - scan_node_2
+    - scan_node_3
+    - scan_node_4
+    - scan_node_5
 
 reward:
   range: [-1.0, 1.0]
@@ -207,5 +238,5 @@ mitre_attack:
 
 docker:
   port: 7860
-  health_check: "/"
+  health_check: "/_stcore/health"
   entrypoint: "uvicorn app:app --host 0.0.0.0 --port 7860"
