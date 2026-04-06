@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from grader import TASK_PASSING_SCORES
+
 if TYPE_CHECKING:
     from ..env import AdaptiveCyberDefenseEnv
 
@@ -241,7 +243,7 @@ class BaseTask:
             task_name=self.config.name,
             seed=seed,
             episode_score=round(episode_score, 4),
-            passed=episode_score >= self.config.passing_score,
+            passed=episode_score >= TASK_PASSING_SCORES.get(self.config.difficulty, self.config.passing_score),
             steps_taken=len(step_rewards),
             threats_total=threats_total,
             threats_contained=threats_contained_count,
