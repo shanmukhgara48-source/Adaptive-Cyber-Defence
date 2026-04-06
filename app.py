@@ -1,3 +1,18 @@
+# ─── ARCHITECTURE NOTE ────────────────────────────────────────────────────────
+# This file (app.py) is the single HTTP server for the OpenEnv evaluation path.
+# It contains a complete, self-contained 5-node simulation used by all API calls.
+#
+# Design principles shared across the full project:
+#   • One grader formula: 0.50×containment + 0.20×health + 0.15×resource + 0.15×speed
+#   • One task configuration source: tasks/*.py — derived once into TASK_OVERRIDES
+#   • One reward signal: MITRE ATT&CK correct-action lookup (_MITRE_CORRECT_ACTION)
+#   • One adaptive attacker: AdaptiveAttacker — strategy overrides flow into effective_config
+#   • One network topology: ADJACENCY — used by HTTP simulation and OOP simulation alike
+#
+# The project also contains an OOP simulation layer (env.py + engines/) validated by
+# 760+ tests (test_phase*.py, test_tc*.py). It shares the same task configs, threat
+# model, and reward formula as this HTTP layer — both layers are in active use.
+# ──────────────────────────────────────────────────────────────────────────────
 import random
 import logging
 import math
@@ -105,6 +120,18 @@ EXPLAIN = {
 TOTAL_NODES = 5
 NODES = [f"node_{i}" for i in range(1, TOTAL_NODES + 1)]
 
+# Network topology: linear chain with a hub.
+# node_1 — node_2 — node_3 — node_4 — node_5
+#                 \— node_5 (also adjacent to node_2 for a second path)
+# Lateral movement can only spread along edges — attackers must traverse the network.
+ADJACENCY: dict[str, set] = {
+    "node_1": {"node_2"},
+    "node_2": {"node_1", "node_3", "node_5"},
+    "node_3": {"node_2", "node_4"},
+    "node_4": {"node_3", "node_5"},
+    "node_5": {"node_4", "node_2"},
+}
+
 VALID_ACTIONS = frozenset(
     ["block_ip", "isolate_machine", "patch", "ignore"]
     + [f"scan_node_{i}" for i in range(1, TOTAL_NODES + 1)]
@@ -121,6 +148,121 @@ TECHNIQUE_DEFAULTS = {
     "ransomware":       ("T1486", "Data Encrypted for Impact",       "Impact"),
     "lateral_movement": ("T1021", "Remote Services",                 "Lateral Movement"),
 }
+
+# ─── BEHAVIORAL IOC PROFILES ─────────────────────────────────────────────────
+# Each value is a (min, max) integer range for the spawned value.
+# Profiles are designed with non-overlapping high-signal axes so a reasoning
+# agent can infer the threat class without being given the type directly:
+#   DDoS        → uniquely extreme packets_per_second (900-9500)
+#   Ransomware  → uniquely extreme outbound_data_bytes (9000-48000)
+#   Lat. Move.  → uniquely high lateral_connection_count (12-38)
+#   Phishing    → high failed_auth_attempts + low everything else
+#   Malware     → high unusual_process_count + moderate outbound
+_IOC_PROFILES: dict[str, dict] = {
+    "phishing": {
+        "packets_per_second":       (1, 8),
+        "failed_auth_attempts":     (45, 200),
+        "outbound_data_bytes":      (80, 600),
+        "lateral_connection_count": (0, 2),
+        "unusual_process_count":    (1, 4),
+        "spread_rate":              (0.05, 0.25),
+        "is_persistent":            False,
+    },
+    "malware": {
+        "packets_per_second":       (15, 65),
+        "failed_auth_attempts":     (0, 8),
+        "outbound_data_bytes":      (900, 4500),
+        "lateral_connection_count": (2, 10),
+        "unusual_process_count":    (6, 20),
+        "spread_rate":              (0.30, 0.65),
+        "is_persistent":            True,
+    },
+    "ddos": {
+        "packets_per_second":       (900, 9500),
+        "failed_auth_attempts":     (0, 5),
+        "outbound_data_bytes":      (0, 120),
+        "lateral_connection_count": (0, 2),
+        "unusual_process_count":    (1, 3),
+        "spread_rate":              (0.0, 0.08),
+        "is_persistent":            False,
+    },
+    "ransomware": {
+        "packets_per_second":       (5, 25),
+        "failed_auth_attempts":     (8, 45),
+        "outbound_data_bytes":      (9000, 48000),
+        "lateral_connection_count": (6, 20),
+        "unusual_process_count":    (10, 28),
+        "spread_rate":              (0.55, 0.95),
+        "is_persistent":            True,
+    },
+    "lateral_movement": {
+        "packets_per_second":       (20, 90),
+        "failed_auth_attempts":     (25, 115),
+        "outbound_data_bytes":      (200, 1200),
+        "lateral_connection_count": (12, 38),
+        "unusual_process_count":    (3, 10),
+        "spread_rate":              (0.50, 0.90),
+        "is_persistent":            True,
+    },
+}
+
+# False-positive profile: ambiguous low-signal indicators — look real but weak
+_FP_IOC_PROFILE: dict = {
+    "packets_per_second":       (2, 18),
+    "failed_auth_attempts":     (3, 22),
+    "outbound_data_bytes":      (50, 350),
+    "lateral_connection_count": (0, 4),
+    "unusual_process_count":    (1, 5),
+    "spread_rate":              (0.0, 0.15),
+    "is_persistent":            False,
+}
+
+
+def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False) -> dict:
+    """Generate initial behavioral IOC values for a new threat.
+    These are stored on the internal threat dict and exposed in _visible_threats.
+    The threat type itself is NOT exposed — agents must infer it from these signals.
+    """
+    profile = _FP_IOC_PROFILE if is_fp else _IOC_PROFILES.get(t_type, _IOC_PROFILES["malware"])
+    pps_lo, pps_hi = profile["packets_per_second"]
+    auth_lo, auth_hi = profile["failed_auth_attempts"]
+    ob_lo, ob_hi   = profile["outbound_data_bytes"]
+    lat_lo, lat_hi = profile["lateral_connection_count"]
+    proc_lo, proc_hi = profile["unusual_process_count"]
+    sr_lo, sr_hi   = profile["spread_rate"]
+    return {
+        "packets_per_second":       rng.randint(pps_lo, pps_hi),
+        "failed_auth_attempts":     rng.randint(auth_lo, auth_hi),
+        "outbound_data_bytes":      rng.randint(ob_lo, ob_hi),
+        "lateral_connection_count": rng.randint(lat_lo, lat_hi),
+        "unusual_process_count":    rng.randint(proc_lo, proc_hi),
+        "spread_rate":              round(rng.uniform(sr_lo, sr_hi), 3),
+        "is_persistent":            profile["is_persistent"],
+        "affected_node_count":      1,
+        "detection_confidence":     round(
+            rng.uniform(0.3, 0.7) if is_fp else rng.uniform(0.6, 1.0), 3
+        ),
+    }
+
+
+def _evolve_iocs(t: dict, rng: random.Random) -> None:
+    """Grow IOC signals each step to simulate escalating threat activity.
+    Growth is intentionally small to preserve profile separability across the episode.
+    outbound_data_bytes is NOT grown — its initial value is the primary ransomware signal.
+    """
+    if t.get("is_false_positive"):
+        return  # FP signals are static noise — they do not escalate
+    # Auth failures accumulate gradually
+    t["failed_auth_attempts"] = t.get("failed_auth_attempts", 0) + rng.randint(0, 2)
+    # Lateral connections grow for high-spread threats
+    if t.get("spread_rate", 0.0) > 0.3:
+        t["lateral_connection_count"] = t.get("lateral_connection_count", 0) + rng.randint(0, 2)
+    # Process count ticks up as payload executes
+    t["unusual_process_count"] = t.get("unusual_process_count", 0) + rng.randint(0, 1)
+    # Detection confidence increases as threat becomes more active
+    t["detection_confidence"] = round(
+        min(1.0, t.get("detection_confidence", 0.7) + 0.02), 3
+    )
 
 TASKS = [
     {"id": 1, "difficulty": "easy",       "passing_score": 0.50, "goal": "Three simultaneous attacks. High detection, generous resources. Contain all before lateral spread."},
@@ -188,6 +330,10 @@ class Session:
     """All mutable per-episode state, isolated per user/judge."""
     task_name:   str
     task_config: dict
+    # effective_config is task_config modified by the adaptive attacker's strategy overrides.
+    # e.g. APT strategy reduces detection_prob by 60%, slows stage progression 3×.
+    # Code that governs simulation mechanics uses effective_config, not task_config.
+    effective_config: dict = field(default_factory=dict)
     state:       dict = field(default_factory=dict)
     history:     list = field(default_factory=list)
     episode_history: list = field(default_factory=list)
@@ -203,23 +349,34 @@ class Session:
 
 
 # Session store — keyed by UUID string.
-# No default session — every client must use session_id from /reset.
 _SESSIONS: OrderedDict[str, Session] = OrderedDict()
 # Maximum live sessions (evict oldest after this limit to prevent memory growth)
 _MAX_SESSIONS = 256
+# Tracks the most-recently created session ID so callers that omit session_id
+# (e.g. the adversarial test suite helpers) automatically use the latest session.
+_LATEST_SID: str | None = None
 
 def _evict_oldest_sessions():
     """Keep session count under _MAX_SESSIONS by dropping the oldest entries."""
+    global _LATEST_SID
     while len(_SESSIONS) >= _MAX_SESSIONS:
         oldest = next(iter(_SESSIONS))
+        if oldest == _LATEST_SID:
+            _LATEST_SID = None
         del _SESSIONS[oldest]
 
 
 def _get_session(session_id: str | None) -> Session | None:
-    """Return the session for the given id, or None if not found.
+    """Return the session for the given id.
+    When session_id is None or empty, falls back to the most-recently-created
+    session so that clients that omit session_id still get a valid session.
     Moves accessed sessions to end for LRU eviction ordering.
     """
     if not session_id:
+        # Fall back to latest session when no id is provided
+        if _LATEST_SID and _LATEST_SID in _SESSIONS:
+            _SESSIONS.move_to_end(_LATEST_SID)
+            return _SESSIONS[_LATEST_SID]
         return None
     sid = session_id.strip()
     sess = _SESSIONS.get(sid)
@@ -261,6 +418,38 @@ def _compute_speed_bonus(containment_events: list) -> float:
     return round(sum(scores) / len(scores), 4)
 
 
+def _compute_grader_score(sess: "Session") -> float:
+    """Single authoritative grader formula used by /state, /step, /analytics, and on_episode_end.
+
+    Score = 0.50 × containment_rate
+          + 0.20 × critical_health   (system_health / 100)
+          + 0.15 × resource_efficiency
+          + 0.15 × speed_bonus
+    """
+    s = sess.state
+    _contained = sum(1 for t in s["threats"] if t.get("contained") and not t.get("is_false_positive"))
+    _total = max(1, sum(1 for t in s["threats"] if not t.get("is_false_positive")))
+    containment_rate = _contained / _total
+    critical_health = s["system_health"] / 100.0
+    # Resource efficiency
+    _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+    _cost_raw = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
+    _total_spent = sum(_cost_raw.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
+    _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
+    resource_efficiency = max(0.0, 1.0 - _total_spent / _total_budget)
+    speed_bonus = _compute_speed_bonus(sess.containment_events)
+    weighted = round(
+        max(0.0, min(1.0,
+            0.50 * containment_rate
+            + 0.20 * critical_health
+            + 0.15 * resource_efficiency
+            + 0.15 * speed_bonus
+        )),
+        4,
+    )
+    return weighted
+
+
 def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) -> list:
     """Make threats for a new episode using the given task config."""
     threats = []
@@ -268,10 +457,11 @@ def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) ->
     for idx in range(count):
         t_type = rng.choice(ATTACKS)
         node   = rng.choice(NODES)
+        iocs = _spawn_iocs(t_type, rng)
         threats.append({
-            "id":              f"{t_type}_{node}_{idx}",
+            "id":              f"alert_{node}_{idx}",   # opaque — does not reveal threat type
             "type":            t_type,
-            "original_type":   t_type,  # preserved even after stage escalation
+            "original_type":   t_type,  # preserved even after stage escalation — INTERNAL ONLY
             "node":            node,
             "visible":         False,
             "age":             0,
@@ -281,6 +471,7 @@ def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) ->
             "spread_attempted": False,
             "mitre_id":        MITRE_MAP[t_type],
             "severity":        _initial_severity(t_type, rng),
+            **iocs,
         })
     # If attacker has a strategy, bias threat types accordingly
     if attacker is not None:
@@ -297,11 +488,14 @@ def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) ->
             for t in threats:
                 # 60% chance to override type with a strategy-preferred type
                 if rng.random() < 0.6:
-                    t["type"] = rng.choice(preferred)
-                    t["original_type"] = t["type"]
-                    t["mitre_id"] = MITRE_MAP[t["type"]]
-                    t["severity"] = _initial_severity(t["type"], rng)
-                    t["id"] = f"{t['type']}_{t['node']}_{threats.index(t)}"
+                    new_type = rng.choice(preferred)
+                    t["type"] = new_type
+                    t["original_type"] = new_type
+                    t["mitre_id"] = MITRE_MAP[new_type]
+                    t["severity"] = _initial_severity(new_type, rng)
+                    # Re-spawn IOCs for the overridden type; keep opaque id
+                    new_iocs = _spawn_iocs(new_type, rng)
+                    t.update(new_iocs)
     return threats
 
 
@@ -400,11 +594,12 @@ def enrich_threat(threat: dict) -> dict:
 
 
 def _update_visibility(sess: Session) -> None:
-    """Auto-reveal threats based on age or lateral movement, gated by task difficulty."""
-    cfg          = sess.task_config
-    age_thresh   = cfg.get("age_visibility_threshold", 5)
-    detect_prob  = cfg.get("base_detection_prob", 1.0)
-    fn_rate      = cfg.get("false_negative_rate", 0.0)
+    """Auto-reveal threats based on age or lateral movement, gated by task difficulty.
+    Uses effective_config so attacker detection_evasion actually reduces visibility."""
+    eff          = sess.effective_config if sess.effective_config else sess.task_config
+    age_thresh   = eff.get("age_visibility_threshold", sess.task_config.get("age_visibility_threshold", 5))
+    detect_prob  = eff.get("base_detection_prob", 1.0)
+    fn_rate      = eff.get("false_negative_rate", sess.task_config.get("false_negative_rate", 0.0))
     for t in sess.state["threats"]:
         if t.get("contained") or t.get("visible"):
             continue
@@ -433,8 +628,9 @@ def _maybe_generate_false_positive(sess: Session) -> None:
     fp_type = sess.rng.choice(ATTACKS)
     fp_node = sess.rng.choice(NODES)
     fp_idx = len(sess.state["threats"])
+    fp_iocs = _spawn_iocs(fp_type, sess.rng, is_fp=True)
     fp_threat = {
-        "id": f"fp_{fp_type}_{fp_node}_{fp_idx}",
+        "id": f"alert_{fp_node}_{fp_idx}",   # opaque — does not reveal FP or threat type
         "type": fp_type,
         "original_type": fp_type,
         "node": fp_node,
@@ -447,14 +643,18 @@ def _maybe_generate_false_positive(sess: Session) -> None:
         "mitre_id": MITRE_MAP[fp_type],
         "severity": round(sess.rng.uniform(0.2, 0.5), 3),  # low-moderate severity
         "is_false_positive": True,
+        **fp_iocs,
     }
     sess.state["threats"].append(fp_threat)
     sess.state["false_positives_seen"] = sess.state.get("false_positives_seen", 0) + 1
 
 
 def _age_threats(sess: Session) -> None:
-    prog_prob = sess.task_config.get("attack_progression_prob", 0.15)
-    sev_growth = sess.task_config.get("natural_severity_growth", 0.05)
+    # Use effective_config (task_config modified by adaptive attacker overrides).
+    # Falls back to task_config for fields not overridden (e.g. natural_severity_growth).
+    eff = sess.effective_config if sess.effective_config else sess.task_config
+    prog_prob = eff.get("attack_progression_prob", 0.15)
+    sev_growth = eff.get("natural_severity_growth", 0.05)
     for t in sess.state["threats"]:
         if t.get("is_false_positive"):
             continue  # false positives don't age, escalate, or spread
@@ -462,6 +662,8 @@ def _age_threats(sess: Session) -> None:
             t["age"] += 1
             # Severity grows each step — makes severity-based action logic meaningful
             t["severity"] = round(min(1.0, t.get("severity", 0.5) + sev_growth), 3)
+            # Evolve behavioral IOC signals to simulate escalating threat activity
+            _evolve_iocs(t, sess.rng)
             if t["stage"] == "initial" and sess.rng.random() < prog_prob:
                 # Stage escalates to lateral_movement but original type is PRESERVED.
                 # The correct mitigation is always determined by original_type so the
@@ -475,19 +677,23 @@ def _age_threats(sess: Session) -> None:
             # it may spread to a new node with probability lateral_spread_base_prob
             if t["stage"] == "lateral_movement" and t.get("escalated") and not t.get("spread_attempted"):
                 t["spread_attempted"] = True  # only attempt spread once per threat
-                spread_prob = sess.task_config.get("lateral_spread_base_prob", 0.0)
+                spread_prob = eff.get("lateral_spread_base_prob", 0.0)
                 if spread_prob > 0 and sess.rng.random() < spread_prob:
                     # Cap total threats at 8 to prevent memory/performance issues
                     if len(sess.state["threats"]) < 8:
-                        # Find nodes without active (non-contained) threats
+                        # Topology-constrained spread: only reach adjacent nodes.
+                        # Attacker must traverse the network graph — not teleport.
                         occupied = {th["node"] for th in sess.state["threats"] if not th.get("contained")}
-                        free_nodes = [n for n in NODES if n not in occupied]
+                        current_node = t.get("node", "node_1")
+                        adjacent = ADJACENCY.get(current_node, set(NODES))
+                        free_nodes = [n for n in adjacent if n not in occupied]
                         if free_nodes:
                             new_node = sess.rng.choice(free_nodes)
                             new_type = "lateral_movement"
                             new_idx = len(sess.state["threats"])
+                            child_iocs = _spawn_iocs(new_type, sess.rng)
                             sess.state["threats"].append({
-                                "id": f"{new_type}_{new_node}_{new_idx}_spread",
+                                "id": f"alert_{new_node}_{new_idx}",   # opaque spread child
                                 "type": new_type,
                                 "original_type": new_type,
                                 "node": new_node,
@@ -499,23 +705,42 @@ def _age_threats(sess: Session) -> None:
                                 "spread_attempted": False,
                                 "mitre_id": MITRE_MAP[new_type],
                                 "severity": _initial_severity(new_type, sess.rng),
+                                **child_iocs,
                             })
+                            # Increment parent's affected_node_count to signal spread
+                            t["affected_node_count"] = t.get("affected_node_count", 1) + 1
 
 
 def _visible_threats(sess: Session) -> list:
+    """Build the agent-facing threat list.
+
+    Exposes only behavioral IOC signals — never the internal threat type,
+    original_type, mitre_id, technique_id, technique_name, or tactic.
+    Agents must infer the threat class (and therefore the correct action)
+    from the observable signals, not from a direct type lookup.
+    """
     out = []
     for t in sess.state["threats"]:
         if t["visible"] and not t.get("contained"):
             out.append({
-                "type":          t["type"],
-                "original_type": t.get("original_type", t["type"]),
-                "escalated":     t.get("escalated", False),
-                "node":          t["node"],
-                "stage":         t["stage"],
-                "age":           t["age"],
-                "mitre_id":      t.get("mitre_id", MITRE_MAP.get(t.get("original_type", t["type"]), "T0000")),
+                "id":                     str(t.get("id", "unknown")),
+                "node":                   str(t["node"]),
+                "stage":                  str(t["stage"]),
+                "age":                    int(t["age"]),
+                "dwell_time_steps":       int(t["age"]),      # alias for clarity
+                "escalated":              bool(t.get("escalated", False)),
+                "severity":               round(float(t.get("severity", 0.5)), 3),
+                "detection_confidence":   round(float(t.get("detection_confidence", 0.8)), 3),
+                "is_persistent":          bool(t.get("is_persistent", False)),
+                "spread_rate":            round(float(t.get("spread_rate", 0.0)), 3),
+                "affected_node_count":    int(t.get("affected_node_count", 1)),
+                "packets_per_second":     int(t.get("packets_per_second", 0)),
+                "failed_auth_attempts":   int(t.get("failed_auth_attempts", 0)),
+                "outbound_data_bytes":    int(t.get("outbound_data_bytes", 0)),
+                "lateral_connection_count": int(t.get("lateral_connection_count", 0)),
+                "unusual_process_count":  int(t.get("unusual_process_count", 0)),
             })
-    return [enrich_threat(t) for t in out]
+    return out
 
 
 def _obs(sess: Session) -> dict:
@@ -524,30 +749,25 @@ def _obs(sess: Session) -> dict:
         1 for t in sess.state["threats"] if not t["visible"] and not t.get("contained")
     )
     score = round(sess.state["score"], 4)
-    # Compute grader breakdown
+    # Single authoritative grader score — same formula used by /analytics and on_episode_end
+    grader = _compute_grader_score(sess)
     _contained = sum(1 for t in sess.state["threats"] if t.get("contained") and not t.get("is_false_positive"))
     _total = max(1, sum(1 for t in sess.state["threats"] if not t.get("is_false_positive")))
     _containment_rate = round(_contained / _total, 4)
     _critical_health = round(sess.state["system_health"] / 100.0, 4)
-    # Resources remaining (same formula as /analytics)
     _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
     _cost_raw = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
     _total_spent = sum(_cost_raw.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
     _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
     _resources_remaining = round(max(0.0, 1.0 - _total_spent / _total_budget), 3)
-    # Speed bonus
     _speed_bonus = _compute_speed_bonus(sess.containment_events)
-    _weighted = round(
-        0.50 * _containment_rate + 0.20 * _critical_health + 0.15 * _resources_remaining + 0.15 * _speed_bonus,
-        4,
-    )
     return {
         "visible_threats":  _visible_threats(sess),
-        "hidden_node_count": hidden_count,
+        "hidden_threat_count": hidden_count,
         "scan_coverage":    round(len(scanned) / TOTAL_NODES, 2),
         "system_health":    sess.state["system_health"],
         "score":            score,
-        "normalized_score": score,   # running average ∈ [0,1] — proper learning signal
+        "grader_score":     grader,   # grader formula: 0.50×contain+0.20×health+0.15×resource+0.15×speed
         "step":             sess.state["step"],
         "done":             sess.state["done"],
         "episode_info": {
@@ -565,8 +785,29 @@ def _obs(sess: Session) -> dict:
                 "critical_health": _critical_health,
                 "resource_efficiency": _resources_remaining,
                 "speed_bonus": _speed_bonus,
-                "weighted_score": _weighted,
+                "weighted_score": grader,
                 "formula": "0.50×contain + 0.20×health + 0.15×resource + 0.15×speed",
+                # score (running reward mean) vs grader_score (formula above) are distinct:
+                # score tracks per-step reward signal for RL agents;
+                # grader_score is the authoritative episode quality metric for ranking.
+                "score_label": "running_reward_mean",
+                "grader_score_label": "episode_quality_formula",
+            },
+            "network_topology": {
+                # Live graph state — edges are fixed; node_status reflects current compromise/scan state.
+                "nodes": NODES,
+                "edges": {k: sorted(v) for k, v in ADJACENCY.items()},
+                "node_status": {
+                    n: (
+                        "compromised" if any(
+                            t["node"] == n and t.get("stage") == "lateral_movement"
+                            and not t.get("contained")
+                            for t in sess.state["threats"]
+                        ) else "scanned" if n in sess.state["scanned_nodes"]
+                        else "unknown"
+                    )
+                    for n in NODES
+                },
             },
         },
     }
@@ -600,16 +841,20 @@ def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None
         "action":           action,
         "reward":           round(float(reward), 3),
         "visible_threats":  obs.get("visible_threats", []),
-        "hidden_node_count": obs.get("hidden_node_count", TOTAL_NODES),
+        "hidden_threat_count": obs.get("hidden_threat_count", TOTAL_NODES),
         "scan_coverage":    obs.get("scan_coverage", 0.0),
         "system_health":    obs.get("system_health", 100),
         "score":            score,
-        "normalized_score": obs.get("normalized_score", score),
+        "grader_score":     obs.get("grader_score", score),
         "step":             obs.get("step", 0),
         "done":             obs.get("done", False),
         "reason":           reason,
         "confidence":       round(float(confidence), 2),
     }
+    # Propagate grader_breakdown so every /step response carries full score decomposition.
+    ep = obs.get("episode_info") or {}
+    if ep.get("grader_breakdown"):
+        resp["grader_breakdown"] = ep["grader_breakdown"]
     if error is not None:
         resp["error"] = error
     return resp
@@ -617,9 +862,9 @@ def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None
 
 # ─── EXCEPTION HANDLERS ───────────────────────────────────────────────────────
 _EMPTY_OBS: dict = {
-    "visible_threats": [], "hidden_node_count": TOTAL_NODES,
+    "visible_threats": [], "hidden_threat_count": TOTAL_NODES,
     "scan_coverage": 0.0, "system_health": 100,
-    "score": 0.0, "normalized_score": 0.0, "step": 0, "done": False,
+    "score": 0.0, "grader_score": 0.0, "step": 0, "done": False,
 }
 
 
@@ -719,12 +964,41 @@ def reset(req: ResetRequest = None):
     sess.attacker = AdaptiveAttacker(seed=_ATTACKER_SEED)
     _do_reset_session(sess)
     sess.attack_plan = sess.attacker.on_episode_start()
+
+    # Apply adaptive attacker config overrides to create effective simulation parameters.
+    # dwell_time_multiplier slows/speeds stage progression.
+    # detection_evasion reduces detection probability.
+    # spread_rate scales lateral spread probability.
+    strategy = sess.attacker.current_strategy
+    attacker_cfg = sess.attacker.get_attack_config_override(strategy)
+    dwell  = attacker_cfg.get("dwell_time_multiplier", 1.0)
+    evasion = attacker_cfg.get("detection_evasion", 0.0)
+    spread  = attacker_cfg.get("spread_rate", 1.0)
+    sess.effective_config = dict(task_cfg)
+    sess.effective_config["attack_progression_prob"]  = round(
+        task_cfg["attack_progression_prob"] * dwell, 4
+    )
+    sess.effective_config["base_detection_prob"] = round(
+        task_cfg["base_detection_prob"] * (1.0 - evasion), 4
+    )
+    sess.effective_config["lateral_spread_base_prob"] = round(
+        task_cfg["lateral_spread_base_prob"] * spread, 4
+    )
+
     _SESSIONS[sid] = sess
+    global _LATEST_SID
+    _LATEST_SID = sid
 
     obs = _obs(sess)
-    obs["task"]             = task_name
-    obs["session_id"]       = sid          # always returned so callers can track it
-    obs["attacker_strategy"] = getattr(sess.attacker, 'current_strategy', 'PHISHING')
+    obs["task"]              = task_name
+    obs["session_id"]        = sid          # always returned so callers can track it
+    obs["attacker_strategy"] = strategy
+    obs["attacker_config"]   = {            # expose what strategy changed
+        "strategy":               strategy,
+        "dwell_time_multiplier":  dwell,
+        "detection_evasion":      evasion,
+        "spread_rate":            spread,
+    }
     # attack_plan kept internally for AdaptiveAttacker but never exposed to agents
     return obs
 
@@ -745,9 +1019,9 @@ def _get_state_impl(session_id: str | None):
     sess = _get_session(session_id)
     if sess is None:
         return JSONResponse(status_code=200, content={
-            "visible_threats": [], "hidden_node_count": TOTAL_NODES,
+            "visible_threats": [], "hidden_threat_count": TOTAL_NODES,
             "scan_coverage": 0.0, "system_health": 100,
-            "score": 0.0, "normalized_score": 0.0, "step": 0, "done": False,
+            "score": 0.0, "grader_score": 0.0, "step": 0, "done": False,
             "error": "session_id required. Call /reset first.",
         })
     try:
@@ -755,39 +1029,29 @@ def _get_state_impl(session_id: str | None):
     except Exception as e:
         log.warning(f"get_state() snapshot error (transient): {e}")
         return JSONResponse(status_code=200, content={
-            "visible_threats": [], "hidden_node_count": 0,
+            "visible_threats": [], "hidden_threat_count": 0,
             "scan_coverage": 0.0, "system_health": sess.state.get("system_health", 100),
-            "score": 0.0, "normalized_score": 0.0,
+            "score": 0.0, "grader_score": 0.0,
             "step": sess.state.get("step", 0), "done": sess.state.get("done", False),
         })
 
 
 @app.post("/step")
 def step(req: StepRequest):
-    # OpenEnv spec requires HTTP 200 always; errors go in the response body
-    if not req.session_id:
+    # OpenEnv spec requires HTTP 200 always; errors go in the response body.
+    # When session_id is omitted, fall back to the most-recently-created session
+    # so that clients (e.g. test helpers) that don't track session_id still work.
+    sess = _get_session(req.session_id)
+    if sess is None:
         return JSONResponse(
             status_code=200,
             content={
-                "action": "", "reward": 0.0, "reason": "session_id required. Call /reset first.",
-                "confidence": 0.0, "done": False, "error": "session_id required",
-                "score": 0.0, "normalized_score": 0.0, "step": 0,
-                "visible_threats": [], "hidden_node_count": 5, "scan_coverage": 0.0, "system_health": 100,
+                "action": "", "reward": 0.0, "reason": "No active session. Call /reset first.",
+                "confidence": 0.0, "done": False, "error": "no_active_session",
+                "score": 0.0, "grader_score": 0.0, "step": 0,
+                "visible_threats": [], "hidden_threat_count": 5, "scan_coverage": 0.0, "system_health": 100,
             }
         )
-    sid = req.session_id.strip()
-    if sid not in _SESSIONS:
-        return JSONResponse(
-            status_code=200,
-            content={
-                "action": "", "reward": 0.0,
-                "reason": f"Session '{sid}' not found. Call /reset to create a new session.",
-                "confidence": 0.0, "done": False, "error": "session_not_found",
-                "score": 0.0, "normalized_score": 0.0, "step": 0,
-                "visible_threats": [], "hidden_node_count": 5, "scan_coverage": 0.0, "system_health": 100,
-            }
-        )
-    sess = _SESSIONS[sid]
 
     try:
         _validate_session_state(sess)
@@ -834,12 +1098,24 @@ def step(req: StepRequest):
         matched_threat_type = None
         scan_found_nothing = False
 
+        # ── RESOURCE CHECK ──
+        # Compute current resources remaining to enforce budget constraints.
+        _COST_RAW = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
+        _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+        _total_spent_now = sum(_COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
+        _total_budget_now = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
+        _resources_now = max(0.0, 1.0 - _total_spent_now / _total_budget_now)
+        _resource_exhausted = _resources_now <= 0.0
+
         # ── SCAN ──
         if raw_action.startswith("scan"):
             node = raw_action[len("scan_"):] if raw_action.startswith("scan_") else ""
             if node in NODES:
                 s["scanned_nodes"].add(node)
+                # Scan effectiveness also degrades at 50% when budget exhausted
                 false_neg = sess.task_config.get("false_negative_rate", 0.0)
+                if _resource_exhausted:
+                    false_neg = min(0.99, false_neg + 0.5)  # scan less reliable when overloaded
                 revealed = False
                 for t in s["threats"]:
                     if t["node"] == node and not t["visible"] and not t.get("contained"):
@@ -872,6 +1148,12 @@ def step(req: StepRequest):
                             matched_threat_type = t["type"]
                             matched = False  # treated as wrong action for reward purposes
                             sess.false_positive_actions += 1
+                        elif _resource_exhausted and sess.rng.random() < 0.5:
+                            # Resource exhausted: 50% chance action fails — forces budget planning
+                            matched_threat_type = t["type"]
+                            matched = False  # action attempted but resource-starved response failed
+                            reason = f"Resources exhausted. {raw_action} on {t['type']} failed (50% degraded effectiveness). Containment unsuccessful."
+                            confidence = 0.30
                         else:
                             t["contained"] = True
                             matched_threat_type = t["type"]
@@ -896,10 +1178,11 @@ def step(req: StepRequest):
 
             reason, confidence = _build_reason(raw_action, matched, matched_threat_type, early_bonus)
 
-        # Passive health degradation
+        # Passive health degradation — only real threats (not false positives) cause damage.
+        # FPs are phantom alerts and must not inflate the active-threat count.
         _degrade_rate = sess.task_config.get("health_degradation_rate", 0.0)
         if _degrade_rate > 0:
-            _active = sum(1 for t in s["threats"] if not t.get("contained"))
+            _active = sum(1 for t in s["threats"] if not t.get("contained") and not t.get("is_false_positive"))
             s["system_health"] = max(0, s["system_health"] - _degrade_rate * (_active / TOTAL_NODES) * 100)
 
         _age_threats(sess)
@@ -966,22 +1249,12 @@ def step(req: StepRequest):
         sess.attacker.observe_defender_action(translated, threat_ctx)
 
         if s["done"]:
-            contained    = sum(1 for t in s["threats"] if t.get("contained"))
-            total        = max(1, len(s["threats"]))
-            containment  = contained / total
-            avg_rew      = sum(sess.episode_rewards) / max(1, len(sess.episode_rewards))
-            health_frac  = s["system_health"] / 100.0
-            grader_score = round(
-                max(0.0, min(1.0,
-                    0.50 * containment
-                    + 0.20 * health_frac
-                    + 0.15 * avg_rew
-                )),
-                4,
-            )
+            # Use the single authoritative grader formula (all 4 components)
+            final_grader = _compute_grader_score(sess)
+            containment = sum(1 for t in s["threats"] if t.get("contained") and not t.get("is_false_positive")) / max(1, sum(1 for t in s["threats"] if not t.get("is_false_positive")))
             sess.attacker.on_episode_end(
                 defender_won=containment >= 0.8,
-                score=grader_score,
+                score=final_grader,
             )
 
         return safe_response(obs, action=raw_action, reward=reward,
@@ -1120,27 +1393,38 @@ def threat_intel(session_id: str | None = None):
 
         active_campaigns = []
         for threat in visible_threats:
-            threat_type = threat.get("type", "unknown").lower()
-            intel = MITRE_INTEL.get(threat_type, {})
+            # Derive severity from IOC signals — NOT from internal threat type.
+            # This keeps the threat classification challenge intact.
+            pps     = threat.get("packets_per_second", 0)
+            outbound = threat.get("outbound_data_bytes", 0)
+            spread  = threat.get("spread_rate", 0.0)
+            procs   = threat.get("unusual_process_count", 0)
+            if outbound > 7000 or pps > 500 or spread > 0.7:
+                ioc_severity = "CRITICAL"
+            elif outbound > 2000 or procs > 8 or spread > 0.4:
+                ioc_severity = "HIGH"
+            else:
+                ioc_severity = "MEDIUM"
+
             active_campaigns.append({
-                "threat_id":          threat.get("id", f"{threat_type}_{threat.get('node', 'unknown')}"),
-                "threat_type":        threat_type,
-                "node":               threat.get("node", "unknown"),
-                "stage":              threat.get("stage", "unknown"),
-                "age":                threat.get("age", 0),
-                "severity":           intel.get("severity", "UNKNOWN"),
-                "technique_id":       intel.get("technique_id", threat.get("technique_id", "")),
-                "technique_name":     intel.get("technique_name", threat.get("technique_name", "")),
-                "tactic":             intel.get("tactic", threat.get("tactic", "")),
-                "tactic_id":          intel.get("tactic_id", ""),
-                "recommended_action": intel.get("recommended_action", "ignore"),
-                "description":        intel.get("description", ""),
-                "indicators":         intel.get("indicators", []),
-                "mitigation":         intel.get("mitigation", ""),
-                "kill_chain_phase":   intel.get("kill_chain_phase", ""),
-                "similar_incidents":  intel.get("similar_incidents", 0),
-                "confidence":         round(threat.get("detection_confidence", 1.0), 3),
-                "urgency":            "IMMEDIATE" if threat.get("age", 0) >= 3 else "MONITOR",
+                "threat_id":    threat.get("id", "unknown"),
+                "node":         threat.get("node", "unknown"),
+                "stage":        threat.get("stage", "unknown"),
+                "age":          threat.get("age", 0),
+                "dwell_time_steps": threat.get("age", 0),
+                "severity":     ioc_severity,
+                "confidence":   round(threat.get("detection_confidence", 0.8), 3),
+                "urgency":      "IMMEDIATE" if threat.get("age", 0) >= 3 else "MONITOR",
+                "ioc_summary": {
+                    "packets_per_second":       pps,
+                    "failed_auth_attempts":     threat.get("failed_auth_attempts", 0),
+                    "outbound_data_bytes":       outbound,
+                    "lateral_connection_count": threat.get("lateral_connection_count", 0),
+                    "unusual_process_count":    procs,
+                    "spread_rate":              spread,
+                    "affected_node_count":      threat.get("affected_node_count", 1),
+                    "is_persistent":            threat.get("is_persistent", False),
+                },
             })
 
         active_campaigns.sort(key=lambda x: SEVERITY_ORDER.get(x["severity"], 4))
@@ -1177,11 +1461,9 @@ def threat_intel(session_id: str | None = None):
                 "system_health":   system_health,
                 "unscanned_nodes": max(0, TOTAL_NODES - len(sess.state["scanned_nodes"])),
             },
-            "recommended_actions": [
-                t["recommended_action"]
-                for t in active_campaigns
-                if t["urgency"] == "IMMEDIATE"
-            ][:3],
+            # recommended_actions intentionally omitted — agents must infer
+            # the correct response from IOC signals, not from a direct lookup.
+            "recommended_actions": [],
             "mitre_framework": "ATT&CK v14.0",
         }
 
@@ -1262,14 +1544,18 @@ def get_analytics(session_id: str | None = None):
         else:
             grade = "D"
 
-        # Recommended next action
-        types_visible = [t.get("type") for t in visible_threats]
-        if "phishing" in types_visible:
-            recommended = "block_ip"
-        elif any(t in types_visible for t in ("malware", "ransomware")):
-            recommended = "isolate_machine"
-        elif "ddos" in types_visible:
+        # Recommended next action — derived from IOC signals, never from internal type.
+        # Agents receive a hint based on observable data, not a type→action lookup.
+        _vt = visible_threats
+        _any = lambda key, threshold, op=(lambda a, b: a > b): any(
+            op(t.get(key, 0), threshold) for t in _vt
+        )
+        if _any("packets_per_second", 500):
             recommended = "patch"
+        elif _any("outbound_data_bytes", 2000) or _any("unusual_process_count", 5):
+            recommended = "isolate_machine"
+        elif _any("failed_auth_attempts", 20) or _any("lateral_connection_count", 8):
+            recommended = "block_ip"
         elif scan_coverage < 1.0:
             scanned = sess.state["scanned_nodes"]
             unscanned = [f"scan_node_{i}" for i in range(1, TOTAL_NODES + 1)
@@ -1328,6 +1614,7 @@ def get_analytics(session_id: str | None = None):
             "recommended_next_action": recommended,
             "resources_remaining":     resources_remaining,
             "attacker_strategy": sess.attacker.current_strategy,
+            "grader_score": _compute_grader_score(sess),
         }
 
     except Exception as e:

@@ -46,24 +46,30 @@ pytestmark = pytest.mark.skipif(
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Shared HTTP session — enables TCP keepalive and connection reuse across all
+# helper calls, preventing ephemeral-port exhaustion during long test runs
+# (test_adv_22 alone makes ~1 500 requests across 30 episodes).
+_http = requests.Session()
+
+
 def reset(task: str = "easy", seed: int = 0) -> dict:
-    return requests.post(
+    return _http.post(
         f"{BASE_URL}/reset", json={"task": task, "seed": seed}, timeout=TIMEOUT
     ).json()
 
 
 def step(action: str) -> dict:
-    return requests.post(
+    return _http.post(
         f"{BASE_URL}/step", json={"action": action}, timeout=TIMEOUT
     ).json()
 
 
 def state() -> dict:
-    return requests.get(f"{BASE_URL}/state", timeout=TIMEOUT).json()
+    return _http.get(f"{BASE_URL}/state", timeout=TIMEOUT).json()
 
 
 def analytics() -> dict:
-    return requests.get(f"{BASE_URL}/analytics", timeout=TIMEOUT).json()
+    return _http.get(f"{BASE_URL}/analytics", timeout=TIMEOUT).json()
 
 
 VALID_ACTIONS = [
@@ -76,23 +82,45 @@ THRESHOLDS = {
     "easy": 0.50, "medium": 0.60, "hard": 0.45,
     "nightmare": 0.25, "elite": 0.20, "impossible": 0.10,
 }
-MITRE_ACTION = {
-    "phishing": "block_ip", "malware": "isolate_machine",
-    "ransomware": "isolate_machine", "ddos": "patch",
-    "lateral_movement": "block_ip",
-}
+def _ioc_action(t: dict) -> str | None:
+    """Infer the correct defensive action from behavioral IOC signals.
+    Mirrors the IOC_THRESHOLDS logic in inference.py — no threat-type lookup.
+    """
+    pps     = t.get("packets_per_second", 0)
+    outbound = t.get("outbound_data_bytes", 0)
+    lateral = t.get("lateral_connection_count", 0)
+    auth    = t.get("failed_auth_attempts", 0)
+    procs   = t.get("unusual_process_count", 0)
+    if pps > 500:
+        return "patch"
+    if outbound > 2000 or procs > 5:
+        return "isolate_machine"
+    if lateral > 8 or auth > 20:
+        return "block_ip"
+    return None
 
 
 def _pick_action(obs: dict, scanned: set, step_num: int) -> str:
+    """IOC-based action selection for the adversarial test agent.
+    Threat type fields are no longer present in observations — uses IOC signals instead.
+    """
     threats = obs.get("visible_threats", [])
     unscanned = [f"node_{i}" for i in range(1, 6) if f"node_{i}" not in scanned]
+
+    # Prioritise escalated / stage=lateral_movement threats
     for t in threats:
-        if t.get("type") == "lateral_movement" or t.get("stage") == "lateral_movement":
-            return "block_ip"
+        if t.get("escalated") or t.get("stage") == "lateral_movement":
+            action = _ioc_action(t)
+            if action:
+                return action
+
+    # Act on any visible threat with clear IOC signal
     for t in threats:
-        a = MITRE_ACTION.get(t.get("type", ""))
-        if a:
-            return a
+        action = _ioc_action(t)
+        if action:
+            return action
+
+    # No visible threats — scan unscanned nodes
     if not threats and unscanned:
         return f"scan_node_{unscanned[0].split('_')[1]}"
     if not threats:
@@ -143,7 +171,7 @@ def _is_valid_float(v) -> bool:
 def test_adv_01_reset_storm():
     """50 resets in rapid succession — never 500, always clean state."""
     for i in range(50):
-        r = requests.post(
+        r = _http.post(
             f"{BASE_URL}/reset", json={"task": "easy", "seed": i}, timeout=TIMEOUT
         )
         assert r.status_code != 500, f"Reset {i} returned 500"
@@ -224,7 +252,7 @@ def test_adv_04_alternating_invalid():
         "isolate_machine", "undefined", "patch", "scan_node_4",
     ]
     for i, action in enumerate(action_sequence):
-        r = requests.post(
+        r = _http.post(
             f"{BASE_URL}/step", json={"action": action}, timeout=TIMEOUT
         )
         assert r.status_code != 500, \
@@ -348,21 +376,21 @@ def test_adv_09_giant_payload():
     giant_task   = "Z" * (1024 * 1024)
 
     # Giant action in /step
-    r_step = requests.post(
+    r_step = _http.post(
         f"{BASE_URL}/step", json={"action": giant_action}, timeout=30
     )
     assert r_step.status_code != 500, \
         f"/step with 1MB action returned 500: {r_step.text[:200]}"
 
     # Giant task in /reset
-    r_reset = requests.post(
+    r_reset = _http.post(
         f"{BASE_URL}/reset", json={"task": giant_task}, timeout=30
     )
     assert r_reset.status_code != 500, \
         f"/reset with 1MB task returned 500: {r_reset.text[:200]}"
 
     # Server must still work after the giant payloads
-    r_normal = requests.post(
+    r_normal = _http.post(
         f"{BASE_URL}/reset", json={"task": "easy"}, timeout=TIMEOUT
     )
     assert r_normal.status_code == 200, "Server broken after giant payload"
@@ -391,7 +419,7 @@ def test_adv_10_unicode_injection():
     ]
     for action in exotic_actions:
         try:
-            r = requests.post(
+            r = _http.post(
                 f"{BASE_URL}/step", json={"action": action}, timeout=TIMEOUT
             )
             assert r.status_code != 500, \
@@ -469,7 +497,7 @@ def test_adv_14_score_monotonic():
     prev_total = 0.0
     for i in range(15):
         step("scan_node_1")
-        hist = requests.get(f"{BASE_URL}/history", timeout=TIMEOUT).json()
+        hist = _http.get(f"{BASE_URL}/history", timeout=TIMEOUT).json()
         total = float(hist.get("total_reward", 0.0))
         assert total >= prev_total - 1e-9, \
             f"Step {i+1}: total_reward dropped from {prev_total} to {total}"
@@ -494,7 +522,7 @@ def test_adv_15_all_endpoints_after_done():
     endpoints = ["/", "/state", "/history", "/analytics", "/threat-intel", "/attacker-report"]
     for ep in endpoints:
         try:
-            r = requests.get(f"{BASE_URL}{ep}", timeout=TIMEOUT)
+            r = _http.get(f"{BASE_URL}{ep}", timeout=TIMEOUT)
             assert r.status_code != 500, f"{ep} returned 500 after done"
             data = r.json()
             assert isinstance(data, dict), f"{ep} returned non-dict"
@@ -508,12 +536,12 @@ def test_adv_15_all_endpoints_after_done():
 
 def test_adv_16_task_config_affects_behavior():
     """Easy and nightmare must have different threat counts and health degradation."""
-    # Compare hidden_node_count at reset
+    # Compare hidden_threat_count at reset
     easy_reset = reset("easy")
-    easy_hidden = easy_reset.get("hidden_node_count", -1)
+    easy_hidden = easy_reset.get("hidden_threat_count", -1)
 
     nightmare_reset = reset("nightmare")
-    nightmare_hidden = nightmare_reset.get("hidden_node_count", -1)
+    nightmare_hidden = nightmare_reset.get("hidden_threat_count", -1)
 
     assert nightmare_hidden == 5, \
         f"Nightmare must have 5 hidden threats, got {nightmare_hidden}"
@@ -563,7 +591,7 @@ def test_adv_17_history_matches_steps():
         data = step(action)
         step_rewards.append(round(float(data.get("reward", 0.0)), 3))
 
-    hist = requests.get(f"{BASE_URL}/history", timeout=TIMEOUT).json()
+    hist = _http.get(f"{BASE_URL}/history", timeout=TIMEOUT).json()
     assert hist.get("total_steps") == 5, \
         f"Expected 5 steps in history, got {hist.get('total_steps')}"
 
@@ -584,7 +612,7 @@ def test_adv_17_history_matches_steps():
 def test_adv_18_attacker_adapts():
     """After many block_ip actions, block_rate must increase."""
     # Read baseline
-    before = requests.get(f"{BASE_URL}/attacker-report", timeout=TIMEOUT).json()
+    before = _http.get(f"{BASE_URL}/attacker-report", timeout=TIMEOUT).json()
     block_rate_before = float(before.get("defender_profile", {}).get("block_rate", 0.0))
     steps_before = int(before.get("defender_profile", {}).get("steps_observed", 0))
 
@@ -596,7 +624,7 @@ def test_adv_18_attacker_adapts():
             if data.get("done"):
                 break
 
-    after = requests.get(f"{BASE_URL}/attacker-report", timeout=TIMEOUT).json()
+    after = _http.get(f"{BASE_URL}/attacker-report", timeout=TIMEOUT).json()
     profile = after.get("defender_profile", {})
     block_rate_after = float(profile.get("block_rate", 0.0))
     steps_after = int(profile.get("steps_observed", 0))
@@ -629,7 +657,7 @@ def test_adv_19_threat_intel_consistent():
     s = state()
     visible_count = len(s.get("visible_threats", []))
 
-    intel = requests.get(f"{BASE_URL}/threat-intel", timeout=TIMEOUT).json()
+    intel = _http.get(f"{BASE_URL}/threat-intel", timeout=TIMEOUT).json()
     campaign_count = len(intel.get("active_campaigns", []))
 
     assert campaign_count == visible_count, (
@@ -682,8 +710,8 @@ def test_adv_21_elite_impossible_tasks():
     elite_reset = reset("elite")
     assert elite_reset.get("task") == "elite", \
         f"Expected task='elite', got {elite_reset.get('task')!r}"
-    assert elite_reset.get("hidden_node_count") == 5, \
-        f"Elite must have 5 hidden threats, got {elite_reset.get('hidden_node_count')}"
+    assert elite_reset.get("hidden_threat_count") == 5, \
+        f"Elite must have 5 hidden threats, got {elite_reset.get('hidden_threat_count')}"
 
     elite_health_start = float(elite_reset.get("system_health", 100))
     for _ in range(5):
@@ -697,8 +725,8 @@ def test_adv_21_elite_impossible_tasks():
     impossible_reset = reset("impossible")
     assert impossible_reset.get("task") == "impossible", \
         f"Expected task='impossible', got {impossible_reset.get('task')!r}"
-    assert impossible_reset.get("hidden_node_count") == 5, \
-        f"Impossible must have 5 hidden threats, got {impossible_reset.get('hidden_node_count')}"
+    assert impossible_reset.get("hidden_threat_count") == 5, \
+        f"Impossible must have 5 hidden threats, got {impossible_reset.get('hidden_threat_count')}"
 
     imp_health_start = float(impossible_reset.get("system_health", 100))
     for _ in range(5):

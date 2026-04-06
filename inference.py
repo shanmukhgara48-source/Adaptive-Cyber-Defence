@@ -12,14 +12,33 @@ API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME   = os.getenv("MODEL_NAME")
 API_KEY      = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-if not API_BASE_URL:
-    raise ValueError("Missing required environment variable: API_BASE_URL")
-if not MODEL_NAME:
-    raise ValueError("Missing required environment variable: MODEL_NAME")
-if not API_KEY:
-    raise ValueError("Missing required environment variable: HF_TOKEN or API_KEY")
+# Defer validation to run-time so that `python inference.py` (without env vars)
+# prints a clear usage message and exits cleanly rather than crashing with a
+# raw traceback at import time.
+def _check_env_vars() -> bool:
+    """Return True if all required env vars are present, False otherwise."""
+    missing = []
+    if not API_BASE_URL:
+        missing.append("API_BASE_URL")
+    if not MODEL_NAME:
+        missing.append("MODEL_NAME")
+    if not API_KEY:
+        missing.append("HF_TOKEN / OPENAI_API_KEY / API_KEY")
+    if missing:
+        print("ERROR: Missing required environment variable(s):")
+        for m in missing:
+            print(f"  - {m}")
+        print(
+            "\nUsage:\n"
+            "  export API_BASE_URL=<openai-compatible-endpoint>\n"
+            "  export MODEL_NAME=<model-id>\n"
+            "  export HF_TOKEN=<api-key>   # or OPENAI_API_KEY / API_KEY\n"
+            "  python inference.py"
+        )
+        return False
+    return True
 
-client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
+client = OpenAI(api_key=API_KEY or "placeholder", base_url=API_BASE_URL or "http://localhost:8000")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -47,18 +66,18 @@ TASK_MAX_STEPS: dict[str, int] = {
     "impossible": 10,
 }
 
-# MITRE → correct action lookup (used for deterministic fallback)
-MITRE_ACTION = {
-    "phishing":         "block_ip",
-    "malware":          "isolate_machine",
-    "ransomware":       "isolate_machine",
-    "ddos":             "patch",
-    "lateral_movement": "block_ip",
-    "T1566":            "block_ip",
-    "T1204":            "isolate_machine",
-    "T1486":            "isolate_machine",
-    "T1499":            "patch",
-    "T1021":            "block_ip",
+# IOC-based action inference thresholds.
+# Threat types are NOT exposed in observations — agents must reason from behavioral signals.
+# These thresholds match the IOC profile separation built into the environment:
+#   packets_per_second > 500   → volumetric flood (DDoS-like)       → patch
+#   outbound_data_bytes > 2000 → data staging/exfil (malware/ransom) → isolate_machine
+#   unusual_process_count > 5  → code execution (malware/ransom)     → isolate_machine
+#   lateral_connection_count > 8 → network traversal               → block_ip
+#   failed_auth_attempts > 20  → credential attack (phish/lateral)  → block_ip
+IOC_THRESHOLDS = {
+    "patch":           {"packets_per_second": 500},
+    "isolate_machine": {"outbound_data_bytes": 2000, "unusual_process_count": 5},
+    "block_ip":        {"lateral_connection_count": 8, "failed_auth_attempts": 20},
 }
 
 # ---------------------------------------------------------------------------
@@ -73,11 +92,9 @@ def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> 
     try:
         intel = requests.get(f"{base_url}/threat-intel", params=params, timeout=5).json()
         enriched["threat_intel"]         = intel.get("active_campaigns", [])
-        enriched["recommended_actions"]  = intel.get("recommended_actions", [])
         enriched["risk_level"]           = intel.get("risk_level", "UNKNOWN")
     except Exception:
         enriched["threat_intel"]         = []
-        enriched["recommended_actions"]  = []
         enriched["risk_level"]           = "UNKNOWN"
 
     try:
@@ -98,63 +115,74 @@ def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> 
 
 
 # ---------------------------------------------------------------------------
-# Deterministic fallback (no LLM needed when answer is obvious)
+# IOC-based action inference (no LLM needed when signals are unambiguous)
 # ---------------------------------------------------------------------------
+
+def _ioc_action(t: dict) -> str | None:
+    """Infer the best action for a single threat from its behavioral IOC signals.
+    Returns None when the signals are too ambiguous to act without LLM reasoning.
+    Signal separation is intentional: each class has at least one uniquely high axis.
+    """
+    pps     = t.get("packets_per_second", 0)
+    outbound = t.get("outbound_data_bytes", 0)
+    lateral = t.get("lateral_connection_count", 0)
+    auth    = t.get("failed_auth_attempts", 0)
+    procs   = t.get("unusual_process_count", 0)
+
+    # Volumetric flood: uniquely extreme packet rate
+    if pps > IOC_THRESHOLDS["patch"]["packets_per_second"]:
+        return "patch"
+    # Data staging / code execution: high outbound OR high process churn
+    if (outbound > IOC_THRESHOLDS["isolate_machine"]["outbound_data_bytes"]
+            or procs > IOC_THRESHOLDS["isolate_machine"]["unusual_process_count"]):
+        return "isolate_machine"
+    # Credential harvesting / network traversal: high lateral connections OR auth failures
+    if (lateral > IOC_THRESHOLDS["block_ip"]["lateral_connection_count"]
+            or auth > IOC_THRESHOLDS["block_ip"]["failed_auth_attempts"]):
+        return "block_ip"
+    return None
+
 
 def deterministic_action(
     enriched: dict,
     scanned_nodes: set,
     step_num: int = 0,
 ) -> str | None:
+    """Return an action from IOC signals without calling the LLM.
+    Returns None when signals are too ambiguous and the LLM should decide.
     """
-    Return an action without calling the LLM when the answer is unambiguous.
-    Returns None when the situation is genuinely ambiguous and needs the LLM.
-    """
-    threats       = enriched.get("visible_threats", [])
-    all_nodes     = [f"node_{i}" for i in range(1, 6)]
-    unscanned     = [n for n in all_nodes if n not in scanned_nodes]
+    threats   = enriched.get("visible_threats", [])
+    all_nodes = [f"node_{i}" for i in range(1, 6)]
+    unscanned = [n for n in all_nodes if n not in scanned_nodes]
 
-    # ── 1. Stage-escalated threats: use original_type for correct MITRE action ──
-    # Threats retain original_type even after escalating to lateral_movement stage.
-    # Always prefer original_type so the MITRE mapping remains correct throughout.
+    # ── 1. Escalated threats — highest urgency, act immediately ───────────────
     for t in threats:
-        if t.get("stage") == "lateral_movement" or t.get("escalated"):
-            orig = t.get("original_type", t.get("type", ""))
-            action = MITRE_ACTION.get(orig) or MITRE_ACTION.get(t.get("technique_id", ""))
-            return action or "block_ip"  # default block_ip if original type unknown
-
-    # ── 2. CRITICAL severity threats — MITRE lookup on original_type ──────────
-    for t in threats:
-        if float(t.get("severity", 0)) > 0.7:
-            orig = t.get("original_type", t.get("type", ""))
-            action = (
-                MITRE_ACTION.get(orig)
-                or MITRE_ACTION.get(t.get("technique_id", ""))
-            )
+        if t.get("escalated") or t.get("stage") == "lateral_movement":
+            action = _ioc_action(t)
             if action:
                 return action
 
-    # ── 3. Any visible threat with known type — MITRE lookup ──────────────────
+    # ── 2. High-severity visible threats ─────────────────────────────────────
     for t in threats:
-        orig = t.get("original_type", t.get("type", ""))
-        action = (
-            MITRE_ACTION.get(orig)
-            or MITRE_ACTION.get(t.get("technique_id", ""))
-        )
+        if float(t.get("severity", 0)) > 0.7:
+            action = _ioc_action(t)
+            if action:
+                return action
+
+    # ── 3. Any visible threat with clear IOC signal ───────────────────────────
+    for t in threats:
+        action = _ioc_action(t)
         if action:
             return action
 
-    # ── 4. No visible threats — scan unscanned nodes first ────────────────────
+    # ── 4. No visible threats — scan unscanned nodes ─────────────────────────
     if not threats and unscanned:
         return f"scan_node_{unscanned[0].split('_')[1]}"
 
-    # ── 5. All nodes scanned, no threats — ignore
-    # Empty rescans give 0.425 reward which is suboptimal vs correct mitigation at 0.75.
-    # Only ignore when there is genuinely nothing left to do.
     if not threats:
         return "ignore"
 
-    # Threats visible but type/technique unknown — let LLM decide
+    # Threats visible but all signals below thresholds — let LLM reason
     return None
 
 
@@ -173,19 +201,19 @@ def choose_action(
 ) -> str:
     """Enrich obs, try deterministic path first, then ask LLM."""
 
-    # ── CHANGE 3: speed bonus hunting — act immediately on young threats ───────
+    # ── Speed bonus: act on young visible threats before enrichment round-trip ──
     # Containing a threat at age < 3 gives +0.1 early bonus.
-    # Skip enrichment entirely for maximum speed on obvious decisions.
-    young_threats = [
-        t for t in obs.get("visible_threats", [])
-        if t.get("age", 99) < 3 and t.get("type")
-    ]
+    # Use IOC-based inference for the fast path — no type lookup needed.
+    young_threats = [t for t in obs.get("visible_threats", []) if t.get("age", 99) < 3]
     if young_threats:
         youngest = min(young_threats, key=lambda t: t.get("age", 99))
-        threat_type = youngest.get("original_type", youngest.get("type", "")).lower()
-        immediate = MITRE_ACTION.get(threat_type)
+        immediate = _ioc_action(youngest)
         if immediate:
-            print(f"[speed] young {threat_type} age={youngest.get('age')} → {immediate} (speed bonus)")
+            print(f"[speed] young threat age={youngest.get('age')} "
+                  f"pps={youngest.get('packets_per_second')} "
+                  f"ob={youngest.get('outbound_data_bytes')} "
+                  f"auth={youngest.get('failed_auth_attempts')} "
+                  f"→ {immediate} (speed bonus)")
             return immediate
 
     enriched      = get_enriched_observation(base_url, obs, session_id)
@@ -200,29 +228,31 @@ def choose_action(
     if fast is not None and fast in VALID_ACTIONS:
         return fast
 
-    # ── Build compact, structured threat summary ───────────────────────────────
+    # ── Build compact IOC-based threat summary ────────────────────────────────
     threat_lines = []
     for t in threats:
         urgency = "URGENT" if t.get("age", 0) >= 3 else "monitor"
         threat_lines.append(
-            f"  [{urgency}] type={t.get('type','?')}  node={t.get('node','?')}"
-            f"  stage={t.get('stage','?')}  age={t.get('age',0)}"
-            f"  technique={t.get('technique_id','?')}"
-            f"  severity={t.get('severity','?')}"
+            f"  [{urgency}] node={t.get('node','?')}  stage={t.get('stage','?')}"
+            f"  age={t.get('age',0)}  severity={t.get('severity','?')}"
+            f"  pps={t.get('packets_per_second',0)}"
+            f"  auth_fails={t.get('failed_auth_attempts',0)}"
+            f"  outbound={t.get('outbound_data_bytes',0)}B"
+            f"  lateral_conns={t.get('lateral_connection_count',0)}"
+            f"  procs={t.get('unusual_process_count',0)}"
+            f"  spread={t.get('spread_rate',0)}"
+            f"  persistent={t.get('is_persistent',False)}"
         )
     threat_summary = "\n".join(threat_lines) if threat_lines else "  (none visible)"
 
-    # Intel from /threat-intel
-    recommended_actions = enriched.get("recommended_actions", [])
-    recommended_next    = enriched.get("recommended_next", "ignore")
-    risk_level          = enriched.get("risk_level", "UNKNOWN")
-    grade               = enriched.get("performance_grade", "?")
-    containment_rate    = enriched.get("containment_rate", 0.0)
+    recommended_next = enriched.get("recommended_next", "ignore")
+    risk_level       = enriched.get("risk_level", "UNKNOWN")
+    grade            = enriched.get("performance_grade", "?")
+    containment_rate = enriched.get("containment_rate", 0.0)
+    next_scan        = f"scan_node_{unscanned[0].split('_')[1]}" if unscanned else "ignore"
 
-    # Next unscanned node action
-    next_scan = f"scan_node_{unscanned[0].split('_')[1]}" if unscanned else "ignore"
-
-    prompt = f"""You are an expert SOC analyst. Choose ONE action RIGHT NOW.
+    prompt = f"""You are an expert SOC analyst. Choose ONE defensive action based on behavioral IOC signals.
+Threat types are NOT shown. You must INFER the threat class from the signals below.
 
 SITUATION (Step {step_num}):
   Health: {system_health}/100  |  Risk: {risk_level}  |  Grade: {grade}
@@ -231,35 +261,35 @@ SITUATION (Step {step_num}):
   Unscanned nodes: {unscanned}
   Last action: {last_action}  →  reward: {last_reward:.3f}
 
-ACTIVE THREATS:
+ACTIVE ALERTS (behavioral IOCs — NO type labels):
 {threat_summary}
 
-MITRE ATT&CK RESPONSE — follow EXACTLY, these give +1.0 reward:
-  phishing        / T1566  →  block_ip
-  malware         / T1204  →  isolate_machine
-  ransomware      / T1486  →  isolate_machine
-  ddos            / T1499  →  patch
-  lateral_movement/ T1021  →  block_ip
-  Wrong action             →  -0.5 penalty
-  ignore                   →  -1.5 penalty
+IOC → THREAT CLASS → CORRECT ACTION (learn this pattern):
+  packets_per_second > 500             → volumetric flood       → patch
+  outbound_data_bytes > 2000           → data staging/exfil     → isolate_machine
+  unusual_process_count > 5            → code execution         → isolate_machine
+  lateral_connection_count > 8         → network traversal      → block_ip
+  failed_auth_attempts > 20 + low pps  → credential harvesting  → block_ip
 
-NOTE: Threats retain their ORIGINAL type even after stage escalation.
-  If stage=lateral_movement but original_type=ransomware → use isolate_machine (not block_ip).
-  Always match the MITRE action to the threat's original_type field.
+PENALTY GUIDE:
+  Correct mitigation  →  +1.0 reward (early containment age<3: +1.1)
+  Wrong mitigation    →  -0.5 penalty
+  ignore              →  -1.5 penalty  AND  -10 health
 
-PRIORITY ORDER (strict):
-  1. Escalated or stage=lateral_movement threat → use MITRE action for original_type
-  2. CRITICAL severity threat visible →  use MITRE action for original_type
-  3. HIGH severity threat visible     →  use MITRE action for original_type
-  4. Any threat visible with known type → use MITRE action for original_type
-  5. Unscanned nodes remain           →  {next_scan}
-  6. All nodes clean                  →  ignore
+REASONING EXAMPLE:
+  outbound=35000B, procs=18, spread=0.8, pps=12
+  → extreme outbound + high process count + high spread = data encryption/exfil
+  → action: isolate_machine
 
-THREAT INTEL SAYS:
-  Recommended: {recommended_next}
-  Intel actions: {recommended_actions or 'none'}
+PRIORITY ORDER:
+  1. URGENT escalated threat (stage=lateral_movement or age>=3) → infer from IOCs above
+  2. Any visible threat with clear signal                        → infer from IOCs above
+  3. Unscanned nodes remain                                      → {next_scan}
+  4. No threats visible                                          → ignore
 
-VALID ACTIONS (output EXACTLY one of these):
+SOC ANALYTICS HINT: {recommended_next}
+
+VALID ACTIONS (output EXACTLY one):
   block_ip  isolate_machine  patch  ignore
   scan_node_1  scan_node_2  scan_node_3  scan_node_4  scan_node_5
 
@@ -446,6 +476,8 @@ TASK_THRESHOLDS: dict[str, float] = {
 
 
 def run():
+    if not _check_env_vars():
+        raise SystemExit(1)
     results = []
 
     for task_name in TASKS:
@@ -482,4 +514,6 @@ def run():
 
 
 if __name__ == "__main__":
+    if not _check_env_vars():
+        raise SystemExit(1)
     run()

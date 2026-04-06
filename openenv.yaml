@@ -60,24 +60,34 @@ observation:
   type: dict
   description: >
     Partially observable environment. Threats are hidden on network nodes and must be
-    discovered via SCAN actions or by waiting for natural aging (age >= 5) or stage
-    escalation (lateral_movement). The agent sees only scanned or escalated threats.
-    Threats retain their original type throughout the episode. Stage escalation
-    (initial → lateral_movement) changes visibility but does NOT change the correct
-    mitigation action — apply the MITRE response for the original threat type.
-    Lateral spread: when a threat escalates to lateral_movement, it may spread to a
-    new node based on lateral_spread_base_prob (per-task config). This can increase
-    total threat count during an episode.
-    False positives: some tasks inject ghost alerts (is_false_positive=True internally)
-    that appear as real threats. Acting on a false positive wastes resources but does
-    not yield containment credit.
+    discovered via SCAN actions or by waiting for natural aging or stage escalation.
+    The agent NEVER sees the internal threat type or MITRE technique ID directly.
+    Instead, each visible threat exposes behavioral IOC (Indicator of Compromise)
+    signals that the agent must reason about to infer the correct mitigation:
+      - High packets_per_second (> ~500)         → likely volumetric flood → patch
+      - High outbound_data_bytes (> ~2000)        → likely data exfil/staging → isolate_machine
+      - High lateral_connection_count (> ~10)     → likely network traversal → block_ip
+      - High failed_auth_attempts + low lateral   → likely credential attack → block_ip
+      - High unusual_process_count + moderate ob  → likely code execution → isolate_machine
+    False positives appear as real alerts with weaker, ambiguous IOC signals.
+    Lateral spread: when a threat escalates to lateral_movement, it may spawn a
+    child threat on an adjacent node. The parent's affected_node_count increments.
   fields:
     - name: visible_threats
       type: list
-      description: "Threats currently visible to the agent. Each entry includes type (original), node, stage (current), age, escalated (bool), and MITRE ATT&CK technique ID. Hidden threats and false positives appear identically to real threats."
-    - name: hidden_node_count
+      description: >
+        Threats currently visible to the agent. Each entry contains ONLY behavioral
+        IOC signals — threat type, original_type, MITRE technique ID, and tactic
+        are intentionally withheld. The agent must classify and respond based on:
+        id (opaque), node, stage (initial|lateral_movement), age, dwell_time_steps,
+        escalated (bool), severity (0.0–1.0), detection_confidence (0.0–1.0),
+        is_persistent (bool), spread_rate (0.0–1.0), affected_node_count (int),
+        packets_per_second (int), failed_auth_attempts (int),
+        outbound_data_bytes (int), lateral_connection_count (int),
+        unusual_process_count (int).
+    - name: hidden_threat_count
       type: int
-      description: "Number of nodes not yet scanned by the agent (0–5)"
+      description: "Number of threats not yet visible to the agent (hidden on unscanned nodes)"
     - name: scan_coverage
       type: float
       description: "Fraction of nodes that have been scanned (0.0 = none, 1.0 = all)"
@@ -86,7 +96,10 @@ observation:
       description: "Current system health (0–100). Drops on wrong actions, ignore, or uncontained threats"
     - name: score
       type: float
-      description: "Cumulative reward this episode"
+      description: "Running reward mean this episode (per-step signal)"
+    - name: grader_score
+      type: float
+      description: "Authoritative grader formula: 0.50×containment + 0.20×health + 0.15×resource + 0.15×speed"
     - name: step
       type: int
       description: "Current time step within the episode"
@@ -95,7 +108,7 @@ observation:
       description: "True when the episode is over (health <= 0 or max steps reached)"
     - name: episode_info
       type: dict
-      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown with the weighted_score formula."
+      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown."
 
 action:
   type: discrete
