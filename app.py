@@ -265,6 +265,21 @@ def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
     proc = _ni(proc, 0.30)
     sr   = round(max(0.0, min(1.0, sr * (1 + rng.uniform(-0.20, 0.20)))), 3)
 
+    # Noise floor: ensure dominant IOC for each real threat type stays above a
+    # meaningful minimum so the agent always has something to reason about.
+    # False positives intentionally keep their low values.
+    if not is_fp:
+        if t_type == "ddos":
+            pps  = max(pps, 200)
+        elif t_type == "ransomware":
+            ob   = max(ob, 500)
+        elif t_type == "lateral_movement":
+            lat  = max(lat, 5)
+        elif t_type == "phishing":
+            auth = max(auth, 10)
+        elif t_type == "malware":
+            proc = max(proc, 3)
+
     iocs = {
         "packets_per_second":       pps,
         "failed_auth_attempts":     auth,
@@ -822,17 +837,11 @@ def _obs(sess: Session) -> dict:
             "false_positives_seen": sess.state.get("false_positives_seen", 0),
             "false_positives_acted_on": sess.false_positive_actions,
             "grader_breakdown": {
-                "containment_rate": _containment_rate,
-                "critical_health": _critical_health,
-                "resource_efficiency": _resources_remaining,
-                "speed_bonus": _speed_bonus,
-                "weighted_score": grader,
-                "formula": "0.50×contain + 0.20×health + 0.15×resource + 0.15×speed",
-                # score (running reward mean) vs grader_score (formula above) are distinct:
-                # score tracks per-step reward signal for RL agents;
-                # grader_score is the authoritative episode quality metric for ranking.
-                "score_label": "running_reward_mean",
-                "grader_score_label": "episode_quality_formula",
+                "containment": _containment_rate,
+                "health": _critical_health,
+                "resource": _resources_remaining,
+                "speed": _speed_bonus,
+                "grader_score": grader,
             },
             "network_topology": {
                 # Live graph state — edges are fixed; node_status reflects current compromise/scan state.

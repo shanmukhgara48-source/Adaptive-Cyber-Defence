@@ -95,16 +95,14 @@ behavioral Indicators of Compromise (IOCs) for each active alert and must infer 
 kind of attack is occurring, then choose the single best defensive action.
 
 Available actions:
-  ISOLATE_MACHINE — cut a compromised machine off the network. Use when: outbound_data_bytes high,
-    unusual_process_count high, spread_rate high (malware, ransomware patterns)
-  BLOCK_IP        — block the attacker source IP. Use when: lateral_connection_count high,
-    failed_auth_attempts high (lateral movement, credential attacks)
-  PATCH           — apply security patch to stop volumetric attack. Use when:
-    packets_per_second very high (DoS pattern)
-  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats on a specific node. Use when
-    hidden_threat_count > 0 and that node is unscanned
-  DO_NOTHING      — take no action. Heavy penalty: -10 health. Never use unless resources
-    are completely exhausted.
+  ISOLATE_MACHINE — network isolation of a compromised node
+  BLOCK_IP        — block a source IP address
+  PATCH           — apply a security patch to a node
+  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats
+  DO_NOTHING      — take no action (heavy penalty)
+
+Your job is to reason from the IOC signals which action is most appropriate. \
+The correct action depends on what the signals suggest about the attack class.
 
 Reasoning approach:
 Each threat exposes behavioral IOC signals. Your job is to classify the attack from
@@ -131,7 +129,7 @@ Examples of valid responses:
 {"action": "ISOLATE_MACHINE", "target": "node_3", "reasoning": "combined high outbound bytes and process anomalies with rapid spread — encryption behavior pattern, isolate to stop propagation"}
 {"action": "BLOCK_IP", "target": "node_1", "reasoning": "authentication failures dominate with minimal network volume — credential attack pattern, block source IP"}
 {"action": "SCAN", "target": "node_4", "reasoning": "hidden_threat_count=2 but node_4 not yet scanned — need visibility before committing resources"}
-{"action": "PATCH", "target": "node_2", "reasoning": "network volume is the dominant signal with minimal auth or process anomalies — volumetric pattern, patch the service"}
+{"action": "PATCH", "target": "node_2", "reasoning": "packets_per_second is the dominant signal with minimal auth failures or process anomalies — applying patch to neutralise the threat"}
 """
 
 # ---------------------------------------------------------------------------

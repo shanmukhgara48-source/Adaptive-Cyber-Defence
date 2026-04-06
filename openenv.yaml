@@ -94,7 +94,7 @@ observation:
       description: "Running reward mean this episode (per-step signal)"
     - name: grader_score
       type: float
-      description: "Authoritative grader formula: 0.50×containment + 0.20×health + 0.15×resource + 0.15×speed"
+      description: "Authoritative episode score computed by the grader. Range 0.0–1.0. Higher is better."
     - name: step
       type: int
       description: "Current time step within the episode"
@@ -103,7 +103,7 @@ observation:
       description: "True when the episode is over (health <= 0 or max steps reached)"
     - name: episode_info
       type: dict
-      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown."
+      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown (component breakdown of the grader score)."
 
 observation_space:
   type: dict
@@ -182,7 +182,7 @@ reward:
       Scan reveals real threat         → +0.25
       Scan reveals false positive      → -0.05
       Scan clean node (nothing found)  → -0.10
-      Scan already-contained node      → -0.20
+      Scan already-contained node      → -0.2
       Scan while resources exhausted   → -0.30
     Agents must use behavioral IOCs to decide WHERE to scan rather than scanning blindly.
     Correct action is inferred from behavioral IOC signals.
