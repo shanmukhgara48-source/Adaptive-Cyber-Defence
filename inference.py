@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import requests
@@ -12,9 +13,11 @@ API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME   = os.getenv("MODEL_NAME")
 API_KEY      = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 
-# Defer validation to run-time so that `python inference.py` (without env vars)
-# prints a clear usage message and exits cleanly rather than crashing with a
-# raw traceback at import time.
+# Print LLM reasoning every step so judges can watch the agent think.
+# Set VERBOSE=false to suppress.
+VERBOSE = os.getenv("VERBOSE", "true").lower() != "false"
+
+
 def _check_env_vars() -> bool:
     """Return True if all required env vars are present, False otherwise."""
     missing = []
@@ -38,6 +41,7 @@ def _check_env_vars() -> bool:
         return False
     return True
 
+
 client = OpenAI(api_key=API_KEY or "placeholder", base_url=API_BASE_URL or "http://localhost:8000")
 
 # ---------------------------------------------------------------------------
@@ -49,14 +53,14 @@ VALID_ACTIONS = [
     *[f"scan_node_{i}" for i in range(1, 6)],
 ]
 
-TEMPERATURE = 0.0
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds between retries
+# max_tokens must fit: {"action":"PATCH_VULNERABILITY","target":"node_5","reasoning":"...~80 chars..."}
+LLM_MAX_TOKENS = 120
+TEMPERATURE    = 0.2   # slight creativity helps with step-by-step reasoning
+MAX_RETRIES    = 3
+RETRY_DELAY    = 2     # seconds between retries
 
 TASKS = ["easy", "medium", "hard", "nightmare", "elite", "impossible"]
 
-# Per-task step limits matching task Python configs exactly
-# easy=30, medium=50, hard=30, nightmare=15, elite=15, impossible=10
 TASK_MAX_STEPS: dict[str, int] = {
     "easy":       30,
     "medium":     50,
@@ -66,128 +70,185 @@ TASK_MAX_STEPS: dict[str, int] = {
     "impossible": 10,
 }
 
-# IOC-based action inference thresholds.
-# Threat types are NOT exposed in observations — agents must reason from behavioral signals.
-# These thresholds match the IOC profile separation built into the environment:
-#   packets_per_second > 500   → volumetric flood (DDoS-like)       → patch
-#   outbound_data_bytes > 2000 → data staging/exfil (malware/ransom) → isolate_machine
-#   unusual_process_count > 5  → code execution (malware/ransom)     → isolate_machine
-#   lateral_connection_count > 8 → network traversal               → block_ip
-#   failed_auth_attempts > 20  → credential attack (phish/lateral)  → block_ip
-IOC_THRESHOLDS = {
-    "patch":           {"packets_per_second": 500},
-    "isolate_machine": {"outbound_data_bytes": 2000, "unusual_process_count": 5},
-    "block_ip":        {"lateral_connection_count": 8, "failed_auth_attempts": 20},
+# Map LLM action names → environment action strings.
+# The LLM uses human-readable names that make the reasoning more legible;
+# the environment expects lowercase snake_case strings.
+ACTION_MAP: dict[str, str] = {
+    "ISOLATE_NODE":        "isolate_machine",
+    "BLOCK_IP":            "block_ip",
+    "PATCH_VULNERABILITY": "patch",
+    "DO_NOTHING":          "ignore",
+    "RESTORE_NODE":        "patch",           # closest available: service remediation
+    "REVOKE_CREDENTIALS":  "block_ip",        # credential harvesting: block source
+    "DECRYPT":             "isolate_machine", # ransomware response: isolate the node
+    "QUARANTINE_SERVICE":  "isolate_machine",
+    # SCAN is handled separately — requires the target node field
 }
+
+# ---------------------------------------------------------------------------
+# System prompt (constant across all steps)
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """You are an autonomous SOC analyst defending a 5-node corporate network \
+against live cyber attacks. You do NOT receive threat type labels. Instead you receive \
+behavioral Indicators of Compromise (IOCs) for each active alert and must infer what \
+kind of attack is occurring, then choose the single best defensive action.
+
+Available actions:
+  ISOLATE_NODE        — cut a compromised machine off the network (stops malware/ransomware spread)
+  BLOCK_IP            — block the attacker's source IP (stops phishing, credential attacks, lateral movement)
+  SCAN                — reveal hidden threats on a specific node (use when coverage < 100%)
+  PATCH_VULNERABILITY — apply a security patch to a service (stops volumetric/DoS attacks)
+  RESTORE_NODE        — restore a node to clean state (use after containment to recover health)
+  REVOKE_CREDENTIALS  — invalidate stolen credentials (use when auth failures are high)
+  DECRYPT             — attempt decryption key recovery (ransomware last resort)
+  QUARANTINE_SERVICE  — isolate a single service without full node isolation
+  DO_NOTHING          — take no action this step (heavy penalty: -10 health, -1.5 reward)
+
+IOC interpretation guide (learn these patterns):
+  packets_per_second > 500          → volumetric flood (DoS)         → PATCH_VULNERABILITY
+  outbound_data_bytes > 2000        → data staging or exfiltration    → ISOLATE_NODE
+  unusual_process_count > 5         → malicious code execution        → ISOLATE_NODE
+  lateral_connection_count > 8      → attacker traversing the network → BLOCK_IP
+  failed_auth_attempts > 20 + pps<20 → credential harvesting          → BLOCK_IP
+  spread_rate > 0.7 + outbound high  → ransomware encryption spread   → ISOLATE_NODE
+
+Think step by step before answering:
+  1. What does each threat's IOC profile suggest about its attack class?
+  2. Which threat is most dangerous right now (highest severity, most escalated)?
+  3. What action best neutralises it given the current resource budget?
+
+Reply ONLY with a single JSON object — no markdown, no prose:
+{"action": "ACTION_NAME", "target": "node_id", "reasoning": "one sentence"}
+
+Examples of valid responses:
+{"action": "ISOLATE_NODE", "target": "node_3", "reasoning": "outbound_data_bytes=35000 and procs=18 indicate active ransomware encryption — isolate immediately"}
+{"action": "BLOCK_IP", "target": "node_1", "reasoning": "failed_auth=140 with pps=3 and no lateral spread is a credential harvesting pattern — block the source"}
+{"action": "SCAN", "target": "node_4", "reasoning": "node_4 unscanned and hidden_threat_count=2 — need visibility before acting"}
+{"action": "PATCH_VULNERABILITY", "target": "node_2", "reasoning": "pps=4500 far exceeds normal traffic — volumetric DoS pattern requires patch"}
+"""
 
 # ---------------------------------------------------------------------------
 # Observation enrichment
 # ---------------------------------------------------------------------------
 
 def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> dict:
-    """Fetch /threat-intel and /analytics to enrich the observation."""
+    """Fetch /threat-intel and /analytics to give the LLM additional context."""
     enriched = dict(obs)
     params = {"session_id": session_id} if session_id else {}
 
     try:
         intel = requests.get(f"{base_url}/threat-intel", params=params, timeout=5).json()
-        enriched["threat_intel"]         = intel.get("active_campaigns", [])
-        enriched["risk_level"]           = intel.get("risk_level", "UNKNOWN")
+        enriched["risk_level"]     = intel.get("risk_level", "UNKNOWN")
+        enriched["threat_summary"] = intel.get("threat_summary", {})
     except Exception:
-        enriched["threat_intel"]         = []
-        enriched["risk_level"]           = "UNKNOWN"
+        enriched["risk_level"]     = "UNKNOWN"
+        enriched["threat_summary"] = {}
 
     try:
         analytics = requests.get(f"{base_url}/analytics", params=params, timeout=5).json()
-        enriched["performance_grade"]    = analytics.get("performance_grade", "?")
-        enriched["recommended_next"]     = analytics.get("recommended_next_action", "ignore")
-        enriched["containment_rate"]     = (
+        enriched["performance_grade"]   = analytics.get("performance_grade", "?")
+        enriched["containment_rate"]    = (
             analytics.get("soc_metrics", {}).get("containment_rate", 0.0)
         )
-        enriched["resources_remaining"]  = analytics.get("resources_remaining", 0.5)
+        enriched["resources_remaining"] = analytics.get("resources_remaining", 0.5)
+        enriched["attacker_strategy"]   = analytics.get("attacker_strategy", "UNKNOWN")
     except Exception:
-        enriched["performance_grade"]    = "?"
-        enriched["recommended_next"]     = "ignore"
-        enriched["containment_rate"]     = 0.0
-        enriched["resources_remaining"]  = 0.5
+        enriched["performance_grade"]   = "?"
+        enriched["containment_rate"]    = 0.0
+        enriched["resources_remaining"] = 0.5
+        enriched["attacker_strategy"]   = "UNKNOWN"
 
     return enriched
 
 
 # ---------------------------------------------------------------------------
-# IOC-based action inference (no LLM needed when signals are unambiguous)
+# Action parsing and mapping
 # ---------------------------------------------------------------------------
 
-def _ioc_action(t: dict) -> str | None:
-    """Infer the best action for a single threat from its behavioral IOC signals.
-    Returns None when the signals are too ambiguous to act without LLM reasoning.
-    Signal separation is intentional: each class has at least one uniquely high axis.
+def _parse_llm_response(raw: str) -> tuple[str, str, str]:
+    """Extract (action, target, reasoning) from the LLM's JSON response.
+    Handles markdown code fences and trailing punctuation.
+    Returns ("", "", "") on any parse failure.
     """
-    pps     = t.get("packets_per_second", 0)
-    outbound = t.get("outbound_data_bytes", 0)
-    lateral = t.get("lateral_connection_count", 0)
-    auth    = t.get("failed_auth_attempts", 0)
-    procs   = t.get("unusual_process_count", 0)
+    # Strip markdown code fences if present
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(l for l in lines if not l.startswith("```")).strip()
 
-    # Volumetric flood: uniquely extreme packet rate
-    if pps > IOC_THRESHOLDS["patch"]["packets_per_second"]:
-        return "patch"
-    # Data staging / code execution: high outbound OR high process churn
-    if (outbound > IOC_THRESHOLDS["isolate_machine"]["outbound_data_bytes"]
-            or procs > IOC_THRESHOLDS["isolate_machine"]["unusual_process_count"]):
-        return "isolate_machine"
-    # Credential harvesting / network traversal: high lateral connections OR auth failures
-    if (lateral > IOC_THRESHOLDS["block_ip"]["lateral_connection_count"]
-            or auth > IOC_THRESHOLDS["block_ip"]["failed_auth_attempts"]):
-        return "block_ip"
+    # Find the first JSON object in the response
+    start = text.find("{")
+    end   = text.rfind("}") + 1
+    if start == -1 or end == 0:
+        return "", "", ""
+
+    try:
+        obj = json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return "", "", ""
+
+    action    = str(obj.get("action", "")).strip().upper().replace(" ", "_")
+    target    = str(obj.get("target", "")).strip().lower()
+    reasoning = str(obj.get("reasoning", "")).strip()
+    return action, target, reasoning
+
+
+def _map_to_env_action(action: str, target: str, scanned_nodes: set) -> str | None:
+    """Convert the LLM's (action, target) pair to a valid environment action string.
+    Returns None if the mapping is impossible.
+    """
+    if action == "SCAN":
+        # Prefer the LLM's target node if it hasn't been scanned yet
+        if target.startswith("node_") and target not in scanned_nodes:
+            candidate = f"scan_{target}"
+            if candidate in VALID_ACTIONS:
+                return candidate
+        # Target already scanned or invalid — redirect to first unscanned node
+        for i in range(1, 6):
+            node_id   = f"node_{i}"
+            candidate = f"scan_node_{i}"
+            if node_id not in scanned_nodes and candidate in VALID_ACTIONS:
+                return candidate
+        # All nodes scanned — allow re-scan of LLM's target (yields low reward but valid)
+        if target.startswith("node_"):
+            candidate = f"scan_{target}"
+            if candidate in VALID_ACTIONS:
+                return candidate
+        return None
+
+    env_action = ACTION_MAP.get(action)
+    if env_action and env_action in VALID_ACTIONS:
+        return env_action
+
     return None
 
 
-def deterministic_action(
-    enriched: dict,
-    scanned_nodes: set,
-    step_num: int = 0,
-) -> str | None:
-    """Return an action from IOC signals without calling the LLM.
-    Returns None when signals are too ambiguous and the LLM should decide.
+def _fallback_action(threats: list, scanned_nodes: set) -> str:
+    """Error fallback: scan the node hosting the highest-severity visible threat.
+    If no threats are visible, scan the next unscanned node.
+    Never uses a MITRE type lookup.
     """
-    threats   = enriched.get("visible_threats", [])
-    all_nodes = [f"node_{i}" for i in range(1, 6)]
-    unscanned = [n for n in all_nodes if n not in scanned_nodes]
+    if threats:
+        # Find the node with the most severe active alert
+        worst = max(threats, key=lambda t: float(t.get("severity", 0.0)))
+        node = worst.get("node", "")
+        if node.startswith("node_"):
+            candidate = f"scan_{node}"
+            if candidate in VALID_ACTIONS:
+                return candidate
 
-    # ── 1. Escalated threats — highest urgency, act immediately ───────────────
-    for t in threats:
-        if t.get("escalated") or t.get("stage") == "lateral_movement":
-            action = _ioc_action(t)
-            if action:
-                return action
+    # Scan next unscanned node
+    for i in range(1, 6):
+        node_id = f"node_{i}"
+        if node_id not in scanned_nodes:
+            return f"scan_node_{i}"
 
-    # ── 2. High-severity visible threats ─────────────────────────────────────
-    for t in threats:
-        if float(t.get("severity", 0)) > 0.7:
-            action = _ioc_action(t)
-            if action:
-                return action
-
-    # ── 3. Any visible threat with clear IOC signal ───────────────────────────
-    for t in threats:
-        action = _ioc_action(t)
-        if action:
-            return action
-
-    # ── 4. No visible threats — scan unscanned nodes ─────────────────────────
-    if not threats and unscanned:
-        return f"scan_node_{unscanned[0].split('_')[1]}"
-
-    if not threats:
-        return "ignore"
-
-    # Threats visible but all signals below thresholds — let LLM reason
-    return None
+    return "ignore"
 
 
 # ---------------------------------------------------------------------------
-# LLM-based action selection
+# LLM-driven action selection — called every step, no rule-based bypass
 # ---------------------------------------------------------------------------
 
 def choose_action(
@@ -199,125 +260,109 @@ def choose_action(
     base_url: str,
     session_id: str = "",
 ) -> str:
-    """Enrich obs, try deterministic path first, then ask LLM."""
+    """Always call the LLM to choose an action.
+    The only non-LLM path is the error fallback (API timeout / parse failure).
+    """
+    enriched       = get_enriched_observation(base_url, obs, session_id)
+    threats        = enriched.get("visible_threats", [])
+    coverage       = enriched.get("scan_coverage", 0.0)
+    system_health  = enriched.get("system_health", 100)
+    hidden_count   = enriched.get("hidden_threat_count", 0)
+    risk_level     = enriched.get("risk_level", "UNKNOWN")
+    grade          = enriched.get("performance_grade", "?")
+    containment    = enriched.get("containment_rate", 0.0)
+    resources      = enriched.get("resources_remaining", 1.0)
+    attacker_strat = enriched.get("attacker_strategy", "UNKNOWN")
 
-    # ── Speed bonus: act on young visible threats before enrichment round-trip ──
-    # Containing a threat at age < 3 gives +0.1 early bonus.
-    # Use IOC-based inference for the fast path — no type lookup needed.
-    young_threats = [t for t in obs.get("visible_threats", []) if t.get("age", 99) < 3]
-    if young_threats:
-        youngest = min(young_threats, key=lambda t: t.get("age", 99))
-        immediate = _ioc_action(youngest)
-        if immediate:
-            print(f"[speed] young threat age={youngest.get('age')} "
-                  f"pps={youngest.get('packets_per_second')} "
-                  f"ob={youngest.get('outbound_data_bytes')} "
-                  f"auth={youngest.get('failed_auth_attempts')} "
-                  f"→ {immediate} (speed bonus)")
-            return immediate
+    all_nodes  = [f"node_{i}" for i in range(1, 6)]
+    unscanned  = [n for n in all_nodes if n not in scanned_nodes]
 
-    enriched      = get_enriched_observation(base_url, obs, session_id)
-    threats       = enriched.get("visible_threats", [])
-    coverage      = enriched.get("scan_coverage", 0.0)
-    system_health = enriched.get("system_health", 100)
-    all_nodes     = [f"node_{i}" for i in range(1, 6)]
-    unscanned     = [n for n in all_nodes if n not in scanned_nodes]
+    # ── Build per-threat IOC block ────────────────────────────────────────────
+    if threats:
+        threat_lines = []
+        for i, t in enumerate(threats, 1):
+            urgency = "!! URGENT" if (t.get("age", 0) >= 3 or t.get("escalated")) else "   active"
+            threat_lines.append(
+                f"  Alert {i} [{urgency}]\n"
+                f"    node={t.get('node','?')}  stage={t.get('stage','initial')}"
+                f"  age/dwell={t.get('age',0)} steps"
+                f"  severity={t.get('severity',0):.2f}"
+                f"  confidence={t.get('detection_confidence',0):.2f}\n"
+                f"    packets_per_second={t.get('packets_per_second',0)}"
+                f"  failed_auth_attempts={t.get('failed_auth_attempts',0)}"
+                f"  outbound_data_bytes={t.get('outbound_data_bytes',0)}\n"
+                f"    lateral_connection_count={t.get('lateral_connection_count',0)}"
+                f"  unusual_process_count={t.get('unusual_process_count',0)}"
+                f"  spread_rate={t.get('spread_rate',0):.2f}"
+                f"  is_persistent={t.get('is_persistent',False)}"
+                f"  affected_nodes={t.get('affected_node_count',1)}"
+            )
+        threats_block = "\n".join(threat_lines)
+    else:
+        threats_block = "  (no visible threats — hidden threats may exist on unscanned nodes)"
 
-    # Fast path: deterministic answer
-    fast = deterministic_action(enriched, scanned_nodes, step_num)
-    if fast is not None and fast in VALID_ACTIONS:
-        return fast
-
-    # ── Build compact IOC-based threat summary ────────────────────────────────
-    threat_lines = []
-    for t in threats:
-        urgency = "URGENT" if t.get("age", 0) >= 3 else "monitor"
-        threat_lines.append(
-            f"  [{urgency}] node={t.get('node','?')}  stage={t.get('stage','?')}"
-            f"  age={t.get('age',0)}  severity={t.get('severity','?')}"
-            f"  pps={t.get('packets_per_second',0)}"
-            f"  auth_fails={t.get('failed_auth_attempts',0)}"
-            f"  outbound={t.get('outbound_data_bytes',0)}B"
-            f"  lateral_conns={t.get('lateral_connection_count',0)}"
-            f"  procs={t.get('unusual_process_count',0)}"
-            f"  spread={t.get('spread_rate',0)}"
-            f"  persistent={t.get('is_persistent',False)}"
-        )
-    threat_summary = "\n".join(threat_lines) if threat_lines else "  (none visible)"
-
-    recommended_next = enriched.get("recommended_next", "ignore")
-    risk_level       = enriched.get("risk_level", "UNKNOWN")
-    grade            = enriched.get("performance_grade", "?")
-    containment_rate = enriched.get("containment_rate", 0.0)
-    next_scan        = f"scan_node_{unscanned[0].split('_')[1]}" if unscanned else "ignore"
-
-    prompt = f"""You are an expert SOC analyst. Choose ONE defensive action based on behavioral IOC signals.
-Threat types are NOT shown. You must INFER the threat class from the signals below.
-
-SITUATION (Step {step_num}):
+    user_prompt = f"""STEP {step_num} — LIVE NETWORK STATUS
   Health: {system_health}/100  |  Risk: {risk_level}  |  Grade: {grade}
-  Scan coverage: {coverage:.0%}  |  Containment rate: {containment_rate:.0%}
-  Scanned nodes: {sorted(scanned_nodes) or 'none'}
-  Unscanned nodes: {unscanned}
-  Last action: {last_action}  →  reward: {last_reward:.3f}
+  Scan coverage: {coverage:.0%}  |  Hidden threats: {hidden_count}
+  Containment rate: {containment:.0%}  |  Resources remaining: {resources:.0%}
+  Attacker strategy: {attacker_strat}
+  Scanned nodes: {sorted(scanned_nodes) if scanned_nodes else 'none'}
+  Unscanned nodes: {unscanned if unscanned else 'all scanned'}
+  Last action: {last_action}  →  reward: {last_reward:+.3f}
 
-ACTIVE ALERTS (behavioral IOCs — NO type labels):
-{threat_summary}
+ACTIVE ALERTS — behavioral IOCs (no type labels):
+{threats_block}
 
-IOC → THREAT CLASS → CORRECT ACTION (learn this pattern):
-  packets_per_second > 500             → volumetric flood       → patch
-  outbound_data_bytes > 2000           → data staging/exfil     → isolate_machine
-  unusual_process_count > 5            → code execution         → isolate_machine
-  lateral_connection_count > 8         → network traversal      → block_ip
-  failed_auth_attempts > 20 + low pps  → credential harvesting  → block_ip
+TASK: Analyse the IOC profiles above, identify the most dangerous threat, and respond \
+with the single best defensive action as JSON.
+Remember: DO_NOTHING costs -10 health and -1.5 reward. Wrong mitigation costs -0.5. \
+Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
+"""
 
-PENALTY GUIDE:
-  Correct mitigation  →  +1.0 reward (early containment age<3: +1.1)
-  Wrong mitigation    →  -0.5 penalty
-  ignore              →  -1.5 penalty  AND  -10 health
-
-REASONING EXAMPLE:
-  outbound=35000B, procs=18, spread=0.8, pps=12
-  → extreme outbound + high process count + high spread = data encryption/exfil
-  → action: isolate_machine
-
-PRIORITY ORDER:
-  1. URGENT escalated threat (stage=lateral_movement or age>=3) → infer from IOCs above
-  2. Any visible threat with clear signal                        → infer from IOCs above
-  3. Unscanned nodes remain                                      → {next_scan}
-  4. No threats visible                                          → ignore
-
-SOC ANALYTICS HINT: {recommended_next}
-
-VALID ACTIONS (output EXACTLY one):
-  block_ip  isolate_machine  patch  ignore
-  scan_node_1  scan_node_2  scan_node_3  scan_node_4  scan_node_5
-
-OUTPUT ONLY THE ACTION. One word. No explanation."""
-
-    model = MODEL_NAME  # single model; MODELS list kept for future expansion
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                max_tokens=LLM_MAX_TOKENS,
                 temperature=TEMPERATURE,
             )
-            raw    = response.choices[0].message.content.strip().lower()
-            action = raw.split()[0].strip(".,!?:") if raw else "ignore"
-            if action not in VALID_ACTIONS:
-                print(f"[model] invalid '{action}' → fallback to intel recommendation")
-                action = recommended_next if recommended_next in VALID_ACTIONS else "ignore"
-            return action
+            raw = response.choices[0].message.content or ""
+
+            action_name, target, reasoning = _parse_llm_response(raw)
+
+            if not action_name:
+                if VERBOSE:
+                    print(f"  [llm] attempt {attempt}: parse failed — raw={raw!r:.80}")
+                continue
+
+            env_action = _map_to_env_action(action_name, target, scanned_nodes)
+
+            if env_action is None:
+                if VERBOSE:
+                    print(f"  [llm] attempt {attempt}: unmappable action={action_name!r} target={target!r}")
+                continue
+
+            if VERBOSE:
+                print(f"  [llm] {action_name}({target}) → {env_action}")
+                print(f"  [reasoning] {reasoning}")
+
+            return env_action
+
         except Exception as e:
-            print(f"[model] attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            if VERBOSE:
+                print(f"  [llm] attempt {attempt}/{MAX_RETRIES} error: {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
 
-    # Final fallback: deterministic (no LLM)
-    print("[model] exhausted retries — using deterministic fallback")
-    return deterministic_action(enriched, scanned_nodes, step_num) or "ignore"
+    # ── Error fallback: scan highest-severity node — NO MITRE lookup ──────────
+    fallback = _fallback_action(threats, scanned_nodes)
+    if VERBOSE:
+        print(f"  [llm] exhausted retries — fallback scan: {fallback}")
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -326,9 +371,10 @@ OUTPUT ONLY THE ACTION. One word. No explanation."""
 
 def run_task(task_name: str) -> dict:
     """Run one full episode for the given task. Returns a result summary dict."""
-    print(f"\n{'=' * 60}")
+    sep = "=" * 70
+    print(f"\n{sep}")
     print(f"TASK: {task_name.upper()}")
-    print(f"{'=' * 60}")
+    print(sep)
 
     try:
         reset_data = requests.post(
@@ -345,21 +391,22 @@ def run_task(task_name: str) -> dict:
     if not session_id:
         print(f"[warn] /reset did not return session_id for task '{task_name}'")
 
-    total_reward  = 0.0
-    final_status  = "in_progress"
-    last_action   = "none"
-    last_reward   = 0.0
+    total_reward = 0.0
+    final_status = "in_progress"
+    last_action  = "none"
+    last_reward  = 0.0
     scanned_nodes: set = set()
-    step_num      = 0
+    step_num     = 0
 
-    print(f"{'Step':<6} {'Action':<22} {'Reward':<8} {'Reason'}")
+    print(f"{'Step':<6} {'Env Action':<22} {'Reward':<8} {'Env Reason'}")
     print("-" * 70)
 
     max_steps = TASK_MAX_STEPS.get(task_name, 30)
     for step_num in range(1, max_steps + 1):
         try:
-            obs = requests.get(f"{BASE_URL}/state",
-                               params={"session_id": session_id}).json()
+            obs = requests.get(
+                f"{BASE_URL}/state", params={"session_id": session_id}
+            ).json()
         except Exception as e:
             print(f"[error] /state failed at step {step_num}: {e}")
             final_status = "error"
@@ -369,18 +416,22 @@ def run_task(task_name: str) -> dict:
             final_status = "done"
             break
 
+        if VERBOSE:
+            print(f"\nStep {step_num}:")
+
         action = choose_action(
             obs, step_num, last_action, last_reward,
             scanned_nodes, BASE_URL, session_id,
         )
 
         if action.startswith("scan_node_"):
-            node_id = action.replace("scan_node_", "node_")
-            scanned_nodes.add(node_id)
+            scanned_nodes.add(action.replace("scan_node_", "node_"))
 
         try:
-            data = requests.post(f"{BASE_URL}/step",
-                                 json={"action": action, "session_id": session_id}).json()
+            data = requests.post(
+                f"{BASE_URL}/step",
+                json={"action": action, "session_id": session_id},
+            ).json()
         except Exception as e:
             print(f"[error] /step failed at step {step_num}: {e}")
             final_status = "error"
@@ -392,7 +443,7 @@ def run_task(task_name: str) -> dict:
         reason        = data.get("reason", "")
         step_label    = data.get("step", step_num)
 
-        print(f"{step_label:<6} {action:<22} {last_reward:<8.3f} {reason[:60]}")
+        print(f"{step_label:<6} {action:<22} {last_reward:<8.3f} {reason[:55]}")
 
         if data.get("done"):
             final_status = "done"
@@ -400,43 +451,33 @@ def run_task(task_name: str) -> dict:
     else:
         final_status = "max_steps_reached"
 
-    # ── Grader formula — EXACT match to tasks/base.py _compute_episode_score ────
-    # score = 0.50 × containment_rate   (threats_contained / threats_total_spawned)
-    #       + 0.20 × critical_health    (system_health / 100 — best HTTP-API proxy)
-    #       + 0.15 × avg_resource_left  (1 - total_spent / total_budget, from /analytics)
-    #       + 0.15 × speed_bonus        (mean early-containment score per threat)
+    # ── Grader formula ────────────────────────────────────────────────────────
     try:
-        analytics = requests.get(f"{BASE_URL}/analytics",
-                                 params={"session_id": session_id}, timeout=5).json()
+        analytics = requests.get(
+            f"{BASE_URL}/analytics",
+            params={"session_id": session_id}, timeout=5,
+        ).json()
         soc = analytics.get("soc_metrics", {})
         net = analytics.get("network_status", {})
-        # containment_rate: threats_contained / threats_total_spawned — matches base.py exactly.
         containment_rate  = float(soc.get("containment_rate", 0.0))
-        # critical_health: system_health/100 — HTTP API proxy for base.py avg critical-asset health.
         critical_health   = float(net.get("system_health", 0)) / 100.0
-        # avg_resource_left: fraction of cumulative budget unused
         avg_resource_left = float(analytics.get("resources_remaining", 0.0))
     except Exception:
         containment_rate  = 0.0
         critical_health   = 0.0
-        avg_resource_left = 0.5  # neutral fallback on analytics failure
+        avg_resource_left = 0.5
 
-    # Speed bonus: fetch containment_events from /state episode_info
     try:
-        final_state = requests.get(f"{BASE_URL}/state", params={"session_id": session_id}, timeout=5).json()
+        final_state = requests.get(
+            f"{BASE_URL}/state",
+            params={"session_id": session_id}, timeout=5,
+        ).json()
         containment_events = final_state.get("episode_info", {}).get("containment_events", [])
-        speed_bonus = 0.0
-        if containment_events:
-            sb_scores = []
-            for ev in containment_events:
-                age = ev.get("age_at_containment", 99)
-                if age < 3:
-                    sb_scores.append(1.0)
-                elif age < 5:
-                    sb_scores.append(0.5)
-                else:
-                    sb_scores.append(0.0)
-            speed_bonus = sum(sb_scores) / len(sb_scores) if sb_scores else 0.0
+        sb_scores = []
+        for ev in containment_events:
+            age = ev.get("age_at_containment", 99)
+            sb_scores.append(1.0 if age < 3 else (0.5 if age < 5 else 0.0))
+        speed_bonus = sum(sb_scores) / len(sb_scores) if sb_scores else 0.0
     except Exception:
         speed_bonus = 0.0
 
@@ -448,23 +489,22 @@ def run_task(task_name: str) -> dict:
     ))
 
     return {
-        "task_id":          task_name,
-        "steps":            step_num,
-        "total_reward":     round(total_reward, 3),
-        "containment_rate": round(containment_rate, 3),
-        "critical_health":  round(critical_health, 3),
+        "task_id":           task_name,
+        "steps":             step_num,
+        "total_reward":      round(total_reward, 3),
+        "containment_rate":  round(containment_rate, 3),
+        "critical_health":   round(critical_health, 3),
         "avg_resource_left": round(avg_resource_left, 3),
-        "speed_bonus":      round(speed_bonus, 3),
-        "score":            round(score, 3),
-        "status":           final_status,
+        "speed_bonus":       round(speed_bonus, 3),
+        "score":             round(score, 3),
+        "status":            final_status,
     }
 
 
 # ---------------------------------------------------------------------------
-# Main: run all tasks sequentially and print summary
+# Main: run all tasks and print summary
 # ---------------------------------------------------------------------------
 
-# Per-task passing thresholds matching task Python configs
 TASK_THRESHOLDS: dict[str, float] = {
     "easy":       0.50,
     "medium":     0.60,
@@ -479,7 +519,6 @@ def run():
     if not _check_env_vars():
         raise SystemExit(1)
     results = []
-
     for task_name in TASKS:
         result = run_task(task_name)
         results.append((task_name, result))
@@ -487,28 +526,27 @@ def run():
     sep  = "=" * 80
     dash = "-" * 80
     print(f"\n{sep}")
-    print("BASELINE RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×resource + 0.15×speed_bonus)")
+    print("RESULTS  (grader: 0.50×contain + 0.20×health + 0.15×resource + 0.15×speed)")
     print(sep)
-    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} {'SpeedBonus':<12} {'Score':<8} {'Threshold':<11} {'Result'}")
+    print(f"{'Task':<12} {'Steps':<7} {'Contain%':<10} {'Health%':<10} "
+          f"{'Speed':<8} {'Score':<8} {'Thresh':<8} {'Result'}")
     print(dash)
     scores = []
     for task_name, r in results:
         threshold = TASK_THRESHOLDS.get(task_name, 0.50)
-        result_label = "PASS ✓" if r["score"] >= threshold else "FAIL ✗"
+        label = "PASS ✓" if r["score"] >= threshold else "FAIL ✗"
         scores.append(r["score"])
         print(
             f"{task_name:<12} {r['steps']:<7} "
             f"{r['containment_rate']:<10.3f} {r['critical_health']:<10.3f} "
-            f"{r['speed_bonus']:<12.3f} {r['score']:<8.3f} {threshold:<11.2f} {result_label}"
+            f"{r['speed_bonus']:<8.3f} {r['score']:<8.3f} {threshold:<8.2f} {label}"
         )
     print(dash)
-
-    non_increasing = all(scores[i] >= scores[i + 1] for i in range(len(scores) - 1))
+    non_increasing = all(scores[i] >= scores[i+1] for i in range(len(scores)-1))
     passes = sum(
-        1 for (task_name, r) in results
-        if r["score"] >= TASK_THRESHOLDS.get(task_name, 0.50)
+        1 for (t, r) in results if r["score"] >= TASK_THRESHOLDS.get(t, 0.50)
     )
-    print(f"\nScores non-increasing with difficulty: {'YES ✓' if non_increasing else 'NO ✗'}")
+    print(f"\nScores non-increasing: {'YES ✓' if non_increasing else 'NO ✗'}")
     print(f"Tasks passed: {passes}/{len(results)}")
     print(sep)
 
