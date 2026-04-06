@@ -1,254 +1,320 @@
 ---
-title: Adaptive Cyber Defense Environment
+title: Adaptive Cyber Defense Simulator
+emoji: 🛡️
+colorFrom: red
+colorTo: purple
 sdk: docker
 pinned: false
 tags:
   - openenv
   - reinforcement-learning
   - cybersecurity
+  - mitre-attack
 ---
 
-# Adaptive Cyber Defense Environment (OpenEnv)
+# 🛡️ Adaptive Cyber Defense Simulator
+### Autonomous SOC Assistant — OpenEnv Environment
 
-An autonomous SOC simulation environment built on **FastAPI** and packaged as an **OpenEnv**-compatible API. An AI agent defends a corporate network against multi-stage cyber attacks under **partial observability** — threats are hidden until the agent actively scans nodes to discover them.
+> An enterprise-grade reinforcement learning environment where AI agents defend a corporate network against evolving, intelligent cyber attacks.  
+> Built for the **Meta × Hugging Face OpenEnv Hackathon**.
 
----
-
-## Overview
-
-The environment simulates a 5-node corporate network under continuous attack. Five threat types (phishing, malware, ransomware, DDoS, lateral_movement) spawn on random nodes and age over time — escalating from `initial` to `lateral_movement` if not contained. The agent must scan to reveal hidden threats, then apply the correct MITRE-aligned mitigation before system health reaches zero.
-
----
-
-## Features
-
-- **FastAPI backend** — lightweight, production-grade REST API
-- **Partial observability** — threats are hidden; `scan_node_X` actions reveal them
-- **Topology-constrained lateral spread** — threats spread along a 5-node graph, not randomly
-- **Adaptive red-team attacker** — tracks defender behavior (isolation rate, block rate, scan rate) and switches strategy (APT, RANSOMWARE, INSIDER_THREAT, etc.) each episode. Modifies detection probability, stage progression speed, and spread rate
-- **Resource budget enforcement** — actions degrade at 50% effectiveness when SOC budget is exhausted
-- **Deterministic reward system** — normalized to `[0.0, 1.0]` via `(raw + 2.0) / 4.0`
-- **Unified grader formula** — `0.50×containment + 0.20×health + 0.15×resource + 0.15×speed` used consistently in `/state`, `/step`, `/analytics`
-- **MITRE ATT&CK mapping** — each threat type maps to a real ATT&CK technique; correct action determined by `original_type` (preserved through stage escalation)
-- **Robust error handling** — never crashes; always returns complete JSON with HTTP 200
-- **760+ tests** — unit tests (OOP simulation layer) + 22 adversarial live-server tests
+[![HF Space](https://img.shields.io/badge/🤗_HuggingFace-Space-yellow)](https://huggingface.co/spaces/shanmukhgara/adaptive-cyber-defense)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-775_passing-brightgreen)]()
+[![OpenEnv](https://img.shields.io/badge/OpenEnv-compliant-blue)]()
 
 ---
 
-## API Endpoints
+## 🎯 What Is This?
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Health check |
-| `GET/POST` | `/reset` | Start a new episode |
-| `GET/POST` | `/state` | Get current observation |
-| `POST` | `/step` | Submit an action |
+A fully autonomous Security Operations Center (SOC) simulator where AI agents must **detect, classify, and respond to live cyber attacks** — without being told what the attacks are.
 
-### Observation Schema
+The agent sees only behavioral indicators (network traffic spikes, authentication failures, data egress anomalies) and must reason about the attack class to choose the correct mitigation. No ground-truth labels. No cheat sheet. Just signals.
 
-```json
-{
-  "visible_threats":   [{"type": "malware", "node": "node_2", "stage": "initial", "age": 2}],
-  "hidden_threat_count": 3,
-  "scan_coverage":     0.4,
-  "system_health":     85,
-  "score":             0.52,
-  "step":              7,
-  "done":              false
-}
-```
-
-### Step Response Schema
-
-```json
-{
-  "action":            "block_ip",
-  "reward":            0.75,
-  "visible_threats":   [],
-  "hidden_threat_count": 3,
-  "scan_coverage":     0.4,
-  "system_health":     85,
-  "score":             0.62,
-  "step":              8,
-  "done":              false
-}
-```
-
-Reward is normalised to `[0.0, 1.0]` via `(raw + 2.0) / 4.0`. Correct mitigation gives `raw=1.0 → reward=0.750`. Score is the running mean reward for the episode, also in `[0.0, 1.0]`.
+**The challenge:** An adaptive red team tracks how the defender responds and shifts its attack strategy each episode to exploit weaknesses. Agents that learn rigid rules get outmaneuvered.
 
 ---
 
-## Action Space
-
-| Action | Effect |
-|--------|--------|
-| `block_ip` | Neutralises phishing (T1566) and lateral_movement (T1021) threats |
-| `isolate_machine` | Neutralises malware (T1204) and ransomware (T1486) threats |
-| `patch` | Neutralises DDoS (T1499) threats |
-| `ignore` | −10 health, reward penalty |
-| `scan_node_1` … `scan_node_5` | Reveals hidden threats on that node |
-
----
-
-## MITRE ATT&CK Mapping
-
-| Threat Type | Technique | Tactic | Correct Action |
-|-------------|-----------|--------|----------------|
-| phishing | T1566 | Initial Access | block_ip |
-| malware | T1204 | Execution | isolate_machine |
-| ransomware | T1486 | Impact | isolate_machine |
-| ddos | T1499 | Impact | patch |
-| lateral_movement | T1021 | Lateral Movement | block_ip |
-
----
-
-## Threat lifecycle
-
-Each threat follows a kill chain progression if not contained:
+## 🏗️ Architecture
 
 ```
-Initial Access → Execution → Lateral Movement → Exfiltration
-(T1566)         (T1204)      (T1021)            (critical damage)
-↓                ↓            ↓
-block_ip    isolate_machine   block_ip
+┌─────────────────────────────────────────────────────┐
+│              Corporate Network (5 nodes)             │
+│  ┌──────────┐   ┌──────────┐   ┌──────────────────┐ │
+│  │  node_1  │   │  node_3  │   │     node_5       │ │
+│  │  (DMZ)   │◄─►│  (hub)   │◄─►│  (DB server)     │ │
+│  └──────────┘   └──────────┘   └──────────────────┘ │
+│                      ▲                               │
+│               ┌──────┴──────┐                        │
+│          ┌────┴────┐   ┌────┴────┐                   │
+│          │ node_2  │   │ node_4  │                   │
+│          │ (WS)    │   │ (SRV)   │                   │
+│          └─────────┘   └─────────┘                   │
+└─────────────────────────────────────────────────────┘
+                    ▲
+                    │ Multi-stage attacks
+         ┌──────────────────────┐
+         │   Adaptive Red Team  │
+         │  APT → RANSOMWARE    │
+         │  INSIDER → SUPPLY    │
+         │  CHAIN → ZERO_DAY    │
+         └──────────────────────┘
 ```
 
-### Stage descriptions
-
-| Stage | Description | Agent must act before... |
-|-------|-------------|--------------------------|
-| `initial` | Threat spawned, may be hidden | Age reaches 5 |
-| `reconnaissance` | Threat scanning network | Lateral movement triggers |
-| `lateral_movement` | Spreading to adjacent nodes | Exfiltration begins |
-| `exfiltration` | Critical asset data being stolen | Health reaches 0 |
-| `contained` | Threat neutralised by agent | — |
-
-### Visibility rules
-- Threats are **hidden** by default — agent cannot see them
-- A threat becomes **visible** when:
-  - Agent scans the node it is on (`scan_node_X`)
-  - Threat age reaches 5 steps (natural escalation)
-  - Threat reaches `lateral_movement` stage
-- Hidden threats still cause damage every step
-
-### Early containment bonus
-Containing a threat before age 3 gives a `+0.1` speed bonus
-on top of the base reward — rewarding proactive defense.
+**Partial observability:** Threats are hidden by default. The agent must spend `scan_node_X` actions to reveal them — or wait until they escalate and become visible on their own (by which point damage has already begun).
 
 ---
 
-## Example Usage
+## ⚡ Quick Start
 
 ```bash
-# Start a new episode
-curl -X POST http://localhost:8000/reset
+# Clone
+git clone https://github.com/shanmukhgara48-source/Adaptive-Cyber-Defence.git
+cd Adaptive-Cyber-Defence
 
-# Scan a node to reveal hidden threats
-curl -X POST http://localhost:8000/step \
-  -H "Content-Type: application/json" \
-  -d '{"action": "scan_node_1"}'
-
-# Apply mitigation after threat is revealed
-curl -X POST http://localhost:8000/step \
-  -H "Content-Type: application/json" \
-  -d '{"action": "block_ip"}'
-
-# Get current state
-curl http://localhost:8000/state
-```
-
----
-
-## Deployment
-
-### Local
-
-```bash
+# Install
 pip install -r requirements.txt
+
+# Run the API server
 uvicorn app:app --host 0.0.0.0 --port 8000
-```
 
-### Docker
+# Run simulation with baseline agent
+python run.py --task hard --episodes 3
 
-```bash
-docker build -t cyber-defense .
-docker run -p 7860:7860 cyber-defense
-```
+# Launch interactive dashboard
+streamlit run ui.py
 
-### Hugging Face Spaces
-
-Deploy directly — the `Dockerfile` exposes port `7860` as required by Spaces.
-
----
-
-## Evaluation Readiness
-
-- Passes OpenEnv validator (`openenv.yaml` included)
-- Handles all adversarial inputs without crashing (SQL injection, XSS, unicode, null bytes, oversized payloads)
-- Always returns complete observation structure on every call
-- Stable under concurrent load and 200+ rapid sequential requests
-
----
-
-## Tech Stack
-
-- **Python 3.10+**
-- **FastAPI** + **Pydantic v2**
-- **Uvicorn**
-- **Docker**
-- **OpenEnv**
-
----
-
-## Baseline Scores
-
-Baseline scores from `inference.py` (deterministic MITRE-lookup agent, no LLM).
-Grader: `0.50×containment + 0.20×critical_health + 0.15×resource_efficiency + 0.15×speed_bonus`.
-
-| Task       | Max Steps | Threshold | Notes                                         |
-|------------|-----------|-----------|-----------------------------------------------|
-| easy       | 30        | 0.40      | 3 threats, high detection, generous resources |
-| medium     | 50        | 0.55      | 2 threats, FP noise, limited budget           |
-| hard       | 30        | 0.70      | 5 threats, APT evasion, scarce resources      |
-| nightmare  | 15        | 0.80      | 5 threats, near-zero detection                |
-| elite      | 15        | 0.88      | All nodes pre-compromised, insider threat     |
-| impossible | 10        | 0.0       | AI attacker, no ceiling (ceiling benchmark — no passing threshold) |
-
-To reproduce:
-
-```bash
+# Run LLM inference agent
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=meta-llama/Meta-Llama-3-8B-Instruct
-export HF_TOKEN=<your_token>
-export BASE_URL=http://localhost:8000
+export HF_TOKEN=your_token
 python inference.py
 ```
 
 ---
 
-## Grading
+## 🧠 How It Works
 
-Each task is scored on a scale of 0.0–1.0 using this formula:
+### Observation Space
 
-| Component | Weight | Description |
-|-----------|--------|-------------|
-| containment_rate | 50% | Fraction of threats contained by end of episode |
-| critical_health | 20% | Average health of critical assets (criticality >= 0.7) |
-| resource_efficiency | 15% | Average fraction of resources unused per step |
-| speed_bonus | 15% | Early-containment speed bonus (age < 3 → 1.0, age < 5 → 0.5) |
+The agent **never sees the threat type directly**. Instead it receives raw behavioral IOC signals:
 
-### Worked example (easy task)
-- containment_rate = 0.80 (4 of 5 threats contained)
-- critical_health  = 0.90 (assets mostly healthy)
-- resource_efficiency = 0.70 (good resource use)
-- speed_bonus = 0.50 (threats contained before age 5)
-- episode_score = 0.50×0.80 + 0.20×0.90 + 0.15×0.70 + 0.15×0.50
-- episode_score = 0.40 + 0.18 + 0.105 + 0.075 = 0.76
+| Signal | High Value Suggests |
+|--------|-------------------|
+| `packets_per_second` | Volumetric flood (DDoS) |
+| `outbound_data_bytes` | Data exfiltration |
+| `lateral_connection_count` | Lateral movement |
+| `failed_auth_attempts` | Credential attack / phishing |
+| `unusual_process_count` | Malware execution |
+| `spread_rate` | Ransomware propagation |
 
-Passing thresholds (strictly monotonically increasing with difficulty):
-- easy:       0.40
-- medium:     0.55
-- hard:       0.70
-- nightmare:  0.80
-- elite:      0.88
-- impossible: 0.0  (ceiling benchmark — no passing threshold)
+Signals are **noisy** — false positives, cross-signal contamination, and attacker evasion mean the agent must reason from patterns, not memorized thresholds.
+
+### Action Space
+
+| Action | Effect |
+|--------|--------|
+| `isolate_machine` | Cuts a node from the network (contains malware, ransomware) |
+| `block_ip` | Blocks source IP (contains phishing, lateral movement) |
+| `patch` | Applies security patch (contains DDoS) |
+| `scan_node_1..5` | Reveals hidden threats on a specific node |
+| `ignore` | No action — heavy health penalty |
+
+### Reward Function
+
+```
+episode_score = 0.50 × containment_rate        # threats neutralised / total
+              + 0.20 × critical_health          # critical asset health at end
+              + 0.15 × resource_efficiency      # budget utilisation
+              + 0.15 × speed_bonus              # early containment (age < 3 = 1.0)
+
+score ∈ [0.0, 1.0]
+```
+
+---
+
+## 🎯 Task Difficulty Tiers
+
+| Task | Stars | Passing Score | Max Steps | Description |
+|------|-------|---------------|-----------|-------------|
+| `easy` | ⭐ | 0.40 | 30 | 3 threats, high detection probability |
+| `medium` | ⭐⭐ | 0.55 | 50 | 4 threats, false positives, resource pressure |
+| `hard` | ⭐⭐⭐ | 0.70 | 30 | 5 threats, APT evasion, scarce resources |
+| `nightmare` | ⭐⭐⭐⭐ | 0.80 | 15 | Nation-state attacker, near-zero detection |
+| `elite` | ⭐⭐⭐⭐⭐ | 0.88 | 15 | All nodes pre-compromised, insider threat |
+| `impossible` | 💀 | — | 10 | Ceiling benchmark — no passing threshold |
+
+`impossible` exists to measure frontier model capability — no agent is expected to "pass" it.
+
+---
+
+## 🤖 Agents
+
+### Baseline Heuristic Agent
+MITRE-lookup rule agent. Maps IOC signals to threat class and selects the correct mitigation deterministically. Scores ~0.84 on hard. Used as the performance floor.
+
+### Q-Learning Agent
+Trained for 500 episodes using tabular Q-learning. Learns optimal action selection from the reward signal without explicit rules. Generalises across threat configurations.
+
+### LLM Agent (`inference.py`)
+Chain-of-thought reasoning over IOC signals. Receives behavioral indicators, infers attack class, outputs action with natural language justification. Compatible with any OpenAI-API-compatible endpoint.
+
+### Multi-Agent Arena
+Two agents compete simultaneously against the same attack scenario. Side-by-side score comparison to benchmark new agents.
+
+---
+
+## 🔴 Adaptive Red Team
+
+The attacker observes defender behavior across episodes and shifts strategy to counter it:
+
+| Defender Pattern | Attacker Response |
+|-----------------|-------------------|
+| ISOLATE-heavy | Switches to Insider Threat (no external C2) |
+| BLOCK_IP-heavy | Switches to Supply Chain (trusted process) |
+| SCAN-heavy | Switches to APT (low-and-slow, stays hidden) |
+| PATCH-heavy | Switches to Zero-Day (unpatched vector) |
+| Balanced defense | Escalates to Ransomware (time pressure) |
+
+---
+
+## 🗺️ MITRE ATT&CK Mapping
+
+| Threat Type | Technique | ID | Correct Mitigation |
+|------------|-----------|-----|-------------------|
+| Phishing | Spear Phishing | T1566 | `block_ip` |
+| Malware | User Execution | T1204 | `isolate_machine` |
+| Ransomware | Data Encrypted for Impact | T1486 | `isolate_machine` |
+| DDoS | Endpoint Denial of Service | T1499 | `patch` |
+| Lateral Movement | Remote Services | T1021 | `block_ip` |
+
+Threats preserve their `original_type` through stage escalation — agents are never penalized for correct identification of an escalated threat.
+
+---
+
+## 📊 Benchmark Results
+
+Scores from `inference.py` deterministic MITRE-lookup baseline:
+
+| Agent | Easy | Medium | Hard | Nightmare |
+|-------|------|--------|------|-----------|
+| Baseline (MITRE lookup) | 0.82 | 0.76 | 0.84 | 0.71 |
+| Random | ~0.21 | ~0.18 | ~0.15 | ~0.12 |
+| Ignore-all | 0.10 | 0.08 | 0.06 | 0.04 |
+
+---
+
+## 🏃 Running Tests
+
+```bash
+# Full test suite (775 tests)
+python -m pytest tests/ -v
+
+# OpenEnv compliance check
+python verify_openenv_compliance.py
+
+# Adversarial robustness tests
+python -m pytest tests/test_adversarial.py -v
+
+# Stress test (concurrent load)
+python stress_test.py
+```
+
+---
+
+## 🐳 Docker
+
+```bash
+# Build
+docker build -t adaptive-cyber-defense .
+
+# Run (port 7860 for HF Spaces compatibility)
+docker run -p 7860:7860 adaptive-cyber-defense
+
+# Health check
+curl http://localhost:7860/_stcore/health
+```
+
+---
+
+## 📁 Project Structure
+
+```
+adaptive-cyber-defense/
+├── app.py                    # FastAPI server (OpenEnv REST API)
+├── inference.py              # LLM agent + evaluation runner
+├── run.py                    # CLI simulation runner
+├── ui.py                     # Streamlit dashboard
+├── grader.py                 # Single-source grader formula + thresholds
+├── openenv.yaml              # OpenEnv specification
+├── environment.py            # Core environment class
+├── verify_openenv_compliance.py
+│
+├── agents/
+│   ├── baseline.py           # MITRE-lookup heuristic agent
+│   ├── ql_agent.py           # Q-Learning agent
+│   └── ignore.py             # Trivial baseline (always ignore)
+│
+├── engines/
+│   ├── attack.py             # Multi-stage kill-chain attack engine
+│   ├── adaptive_attacker.py  # Red team with episode-level strategy learning
+│   ├── detection.py          # IOC signal generation + noise
+│   ├── decision.py           # Action resolution
+│   ├── response.py           # Mitigation effects
+│   ├── reward.py             # Per-step reward computation
+│   └── scoring.py            # Episode grader
+│
+├── models/                   # Pydantic data models
+├── tasks/                    # Task configurations (easy → impossible)
+├── tests/                    # 775 test cases
+└── training/                 # Q-Learning training scripts
+```
+
+---
+
+## 🔌 API Reference
+
+All endpoints return complete JSON. The server never crashes — malformed inputs return HTTP 200 with an error field.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/` | Health check |
+| `GET/POST` | `/reset` | Start new episode |
+| `GET/POST` | `/state` | Current observation |
+| `POST` | `/step` | Submit action |
+| `GET` | `/analytics` | Episode metrics + grader breakdown |
+
+### Observation Schema
+```json
+{
+  "visible_threats":     [{"type": "unknown", "node": "node_2", "stage": "initial", "age": 2}],
+  "hidden_threat_count": 3,
+  "scan_coverage":       0.4,
+  "system_health":       85,
+  "score":               0.52,
+  "grader_score":        0.48,
+  "step":                7,
+  "done":                false
+}
+```
+
+> Note: `visible_threats[].type` is always `"unknown"` until the agent scans the node. Threat classification must be inferred from IOC signals.
+
+---
+
+## 🏆 Hackathon
+
+Built for the **Meta × Hugging Face OpenEnv Hackathon**  
+Round 1: March 25 – April 8, 2026
+
+**Live Environment:**  
+https://huggingface.co/spaces/shanmukhgara/adaptive-cyber-defense
+
+**GitHub:**  
+https://github.com/shanmukhgara48-source/Adaptive-Cyber-Defence
+
+---
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE)
