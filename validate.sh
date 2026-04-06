@@ -109,7 +109,7 @@ CURL_OUTPUT=$(portable_mktemp "validate-curl")
 CLEANUP_FILES+=("$CURL_OUTPUT")
 HTTP_CODE=$(curl -s -o "$CURL_OUTPUT" -w "%{http_code}" -X POST \
   -H "Content-Type: application/json" -d '{}' \
-  "$PING_URL/reset" --max-time 30 2>"$CURL_OUTPUT" || printf "000")
+  "$PING_URL/reset" --max-time 30 2>/dev/null || printf "000")
 
 if [ "$HTTP_CODE" = "200" ]; then
   pass "HF Space is live and responds to /reset"

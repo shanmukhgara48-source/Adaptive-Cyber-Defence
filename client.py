@@ -47,17 +47,12 @@ class AdaptiveCyberDefenseEnv(EnvClient[Action, Observation, State]):
 
         observation = Observation(
             visible_threats=visible_threats,
-            hidden_node_count=obs_data.get("hidden_node_count", 0),
+            hidden_threat_count=obs_data.get("hidden_threat_count", 0),
             scan_coverage=obs_data.get("scan_coverage", 0.0),
             system_health=obs_data.get("system_health", 100),
-            network_state=network_state,
             step=obs_data.get("step", 0),
             score=obs_data.get("score", 0.0),
             done=payload.get("done", False),
-            compromised_nodes=obs_data.get("compromised_nodes", []),
-            threat_severity=obs_data.get("threat_severity", 0.0),
-            network_load=obs_data.get("network_load", 0.0),
-            detection_confidence=obs_data.get("detection_confidence", 1.0),
         )
 
         return StepResult(

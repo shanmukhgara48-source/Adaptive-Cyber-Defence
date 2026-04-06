@@ -11,7 +11,7 @@ A random agent scores ~0.05. Even a perfect agent scores ~0.15.
 This task exists to demonstrate the environment has no ceiling.
 
 Win condition: survive — do not let all assets reach zero health.
-Passing score: 0.10 (exists to show environment has no ceiling)
+Passing score: 0.0 (ceiling benchmark — no passing threshold)
 """
 
 from .base import BaseTask, TaskConfig
@@ -36,5 +36,7 @@ class ImpossibleTask(BaseTask):
         false_positive_rate=0.50,
         false_negative_rate=0.80,
         base_detection_prob=0.05,
-        passing_score=0.10,
+        # passing_score=0.0 — ceiling benchmark, not a scored task.
+        # See grader.py TASK_PASSING_SCORES for authoritative values.
+        passing_score=0.0,
     )

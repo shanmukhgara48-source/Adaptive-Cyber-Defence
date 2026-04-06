@@ -160,11 +160,10 @@ action:
 action_space:
   type: discrete
   actions:
-    - ISOLATE_NODE
-    - BLOCK_IP
-    - SCAN
-    - PATCH_SYSTEM
-    - IGNORE
+    - block_ip
+    - isolate_machine
+    - patch
+    - ignore
     - scan_node_1
     - scan_node_2
     - scan_node_3

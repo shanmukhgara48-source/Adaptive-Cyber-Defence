@@ -17,11 +17,11 @@ MAX_ACTION_LEN = 64
 class Observation(BaseModel):
     """Response schema for /reset and /state."""
     visible_threats:   list[dict[str, Any]] = []
-    hidden_node_count: int   = 0
+    hidden_threat_count: int  = 0
     scan_coverage:     float = 0.0
     system_health:     int   = 100
     score:             float = 0.0
-    normalized_score:  float = 0.0   # running average ∈ [0,1] — proper learning signal
+    grader_score:      float = 0.0   # grader formula: 0.50×contain+0.20×health+0.15×resource+0.15×speed
     step:              int   = 0
     done:              bool  = False
     episode_info:      dict[str, Any] | None = None

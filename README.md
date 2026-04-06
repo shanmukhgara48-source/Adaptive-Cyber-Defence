@@ -203,7 +203,7 @@ Deploy directly — the `Dockerfile` exposes port `7860` as required by Spaces.
 ## Baseline Scores
 
 Baseline scores from `inference.py` (deterministic MITRE-lookup agent, no LLM).
-Grader: `0.50×containment + 0.20×critical_health + 0.15×avg_resource_left + 0.15×avg_reward`.
+Grader: `0.50×containment + 0.20×critical_health + 0.15×resource_efficiency + 0.15×speed_bonus`.
 
 | Task       | Max Steps | Threshold | Notes                                         |
 |------------|-----------|-----------|-----------------------------------------------|
@@ -212,7 +212,7 @@ Grader: `0.50×containment + 0.20×critical_health + 0.15×avg_resource_left + 0
 | hard       | 30        | 0.70      | 5 threats, APT evasion, scarce resources      |
 | nightmare  | 15        | 0.80      | 5 threats, near-zero detection                |
 | elite      | 15        | 0.88      | All nodes pre-compromised, insider threat     |
-| impossible | 10        | 0.94      | AI attacker, no ceiling                       |
+| impossible | 10        | 0.0       | AI attacker, no ceiling (ceiling benchmark — no passing threshold) |
 
 To reproduce:
 
@@ -235,13 +235,13 @@ Each task is scored on a scale of 0.0–1.0 using this formula:
 | containment_rate | 50% | Fraction of threats contained by end of episode |
 | critical_health | 20% | Average health of critical assets (criticality >= 0.7) |
 | resource_efficiency | 15% | Average fraction of resources unused per step |
-| avg_step_reward | 15% | Average per-step reward quality |
+| speed_bonus | 15% | Early-containment speed bonus (age < 3 → 1.0, age < 5 → 0.5) |
 
 ### Worked example (easy task)
 - containment_rate = 0.80 (4 of 5 threats contained)
 - critical_health  = 0.90 (assets mostly healthy)
 - resource_efficiency = 0.70 (good resource use)
-- avg_step_reward = 0.50 (mostly correct actions)
+- speed_bonus = 0.50 (threats contained before age 5)
 - episode_score = 0.50×0.80 + 0.20×0.90 + 0.15×0.70 + 0.15×0.50
 - episode_score = 0.40 + 0.18 + 0.105 + 0.075 = 0.76
 
@@ -251,4 +251,4 @@ Passing thresholds (strictly monotonically increasing with difficulty):
 - hard:       0.70
 - nightmare:  0.80
 - elite:      0.88
-- impossible: 0.94
+- impossible: 0.0  (ceiling benchmark — no passing threshold)

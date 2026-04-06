@@ -523,10 +523,12 @@ def _init(task_name: str = "Easy", seed: int = 42) -> None:
     # ── Adaptive attacker: end the previous episode and start a new one ───────
     _attacker = st.session_state.get("adaptive_attacker")
     if _attacker is not None and st.session_state.get("step_count", 0) > 0:
-        _prev_score = st.session_state.get("total_reward", 0.0)
-        _prev_done  = st.session_state.get("done", False)
+        _prev_score  = st.session_state.get("total_reward", 0.0)
+        _prev_done   = st.session_state.get("done", False)
+        _prev_health = st.session_state.get("system_health", 100)
+        _defender_won = _prev_done and _prev_health > 0
         _attacker.on_episode_end(
-            defender_won=_prev_done,
+            defender_won=_defender_won,
             score=min(1.0, max(0.0, _prev_score / max(1, st.session_state.get("step_count", 1)))),
         )
 

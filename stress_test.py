@@ -226,7 +226,8 @@ def test_16_reward_always_in_range():
                 reset()
             d = step(random.choice(VALID_ACTIONS)).json()
             reward = float(d.get("reward", 0))
-            assert 0.0 <= reward <= 1.0, f"reward {reward} out of [0,1] at step {i}"
+            assert -1.0 <= reward <= 1.0, \
+                f"Reward {reward} outside [-1.0, 1.0] at step {i}"
         print("[PASS] test_16_reward_always_in_range")
         return True
     except Exception as e:

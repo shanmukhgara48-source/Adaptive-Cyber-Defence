@@ -1,25 +1,16 @@
 """
 models.py — root-level re-export for OpenEnv compliance.
-Exposes Observation, Action, Reward from models/api.py
+Exposes Observation, ActionRequest, Reward from models/api.py
+and Action from models/action.py, RewardBreakdown from engines/reward.py
 """
-from models.api import (
-    Observation,
-    Action,
-    Reward,
-    RewardBreakdown,
-    ThreatInfo,
-    NodeState,
-    ActionType,
-    ThreatStage,
-)
+from models.api import Observation, ActionRequest, Reward
+from models.action import Action
+from engines.reward import RewardBreakdown
 
 __all__ = [
     "Observation",
-    "Action", 
+    "ActionRequest",
+    "Action",
     "Reward",
     "RewardBreakdown",
-    "ThreatInfo",
-    "NodeState",
-    "ActionType",
-    "ThreatStage",
 ]

@@ -230,12 +230,15 @@ def _run_with_attacker(env, task, agent, seed, attacker, strategy):
 def run_verbose_with_env(env, task, agent, seed, attacker, strategy):
     """Verbose episode runner that feeds attacker observations and prints MITRE."""
     from adaptive_cyber_defense.models.threat import generate_mitre_summary
+    from adaptive_cyber_defense.tasks.base import TaskResult
 
     state = env.reset(seed=seed)
     print(f"\nTask    : {task.config.name}  (seed={seed})")
     print(f"Agent   : {type(agent).__name__}  |  MaxSteps: {task.config.max_steps}\n")
 
     step_rewards, all_threats = [], list(state.active_threats)
+    breakdowns, resource_leftovers = [], []
+    threats_seen: set = {t.id for t in state.active_threats}
     done, step = False, 0
 
     while not done:
@@ -246,6 +249,11 @@ def run_verbose_with_env(env, task, agent, seed, attacker, strategy):
         step += 1
         step_rewards.append(reward)
         all_threats.extend(state.active_threats)
+        if "reward_breakdown" in info:
+            breakdowns.append(info["reward_breakdown"])
+        resource_leftovers.append(info.get("resource_utilisation", 0.0))
+        for t in state.active_threats:
+            threats_seen.add(t.id)
 
         bd            = info.get("reward_breakdown", {})
         threats_active = info.get("threats_active", "?")
@@ -276,7 +284,49 @@ def run_verbose_with_env(env, task, agent, seed, attacker, strategy):
         for tid, cnt in sorted(mitre_counts.items()):
             print(f"  {tid:<12}  {cnt:>5}")
 
-    result = _run_with_attacker(task.build_env(), task, agent, seed, attacker, strategy)
+    # Build TaskResult from the completed verbose loop — no double episode
+    final = env.state()
+    threats_total     = len(threats_seen)
+    threats_still     = len(final.active_threats)
+    threats_contained = max(0, threats_total - threats_still)
+    containment_rate  = threats_contained / threats_total if threats_total > 0 else 1.0
+    critical_assets   = [a for a in final.assets.values() if a.criticality >= 0.7]
+    critical_health   = (
+        sum(a.health for a in critical_assets) / len(critical_assets)
+        if critical_assets else 1.0
+    )
+    avg_res = (
+        1.0 - sum(resource_leftovers) / len(resource_leftovers)
+        if resource_leftovers else 1.0
+    )
+    episode_score = task._compute_episode_score(
+        containment_rate=containment_rate,
+        critical_health=critical_health,
+        avg_resource_left=avg_res,
+        step_rewards=step_rewards,
+    )
+    terminal_reason = "max_steps"
+    if threats_still == 0 and threats_total > 0:
+        terminal_reason = "all_contained"
+    elif any(a.criticality >= 0.9 and a.health <= 0.0 for a in final.assets.values()):
+        terminal_reason = "critical_asset_failure"
+
+    result = TaskResult(
+        task_name=task.config.name,
+        seed=seed,
+        episode_score=round(episode_score, 4),
+        passed=episode_score >= task.config.passing_score,
+        steps_taken=len(step_rewards),
+        threats_total=threats_total,
+        threats_contained=threats_contained,
+        containment_rate=round(containment_rate, 4),
+        critical_health_end=round(critical_health, 4),
+        avg_resource_left=round(avg_res, 4),
+        total_reward=round(sum(step_rewards), 4),
+        step_rewards=step_rewards,
+        reward_breakdowns=breakdowns,
+        terminal_reason=terminal_reason,
+    )
     print(f"\n{result.summary()}\n")
     return result
 

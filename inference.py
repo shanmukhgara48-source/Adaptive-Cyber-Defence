@@ -43,7 +43,19 @@ def _check_env_vars() -> bool:
     return True
 
 
-client = OpenAI(api_key=API_KEY or "placeholder", base_url=API_BASE_URL or "http://localhost:8000")
+TIMEOUT = 30  # seconds — judge evaluation timeout
+
+_client = None
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=API_KEY,
+            base_url=API_BASE_URL,
+        )
+    return _client
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -142,7 +154,7 @@ def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> 
     params = {"session_id": session_id} if session_id else {}
 
     try:
-        intel = requests.get(f"{base_url}/threat-intel", params=params, timeout=5).json()
+        intel = requests.get(f"{base_url}/threat-intel", params=params, timeout=TIMEOUT).json()
         enriched["risk_level"]     = intel.get("risk_level", "UNKNOWN")
         enriched["threat_summary"] = intel.get("threat_summary", {})
     except Exception:
@@ -150,7 +162,7 @@ def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> 
         enriched["threat_summary"] = {}
 
     try:
-        analytics = requests.get(f"{base_url}/analytics", params=params, timeout=5).json()
+        analytics = requests.get(f"{base_url}/analytics", params=params, timeout=TIMEOUT).json()
         enriched["performance_grade"]   = analytics.get("performance_grade", "?")
         enriched["containment_rate"]    = (
             analytics.get("soc_metrics", {}).get("containment_rate", 0.0)
@@ -325,7 +337,7 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = client.chat.completions.create(
+            response = _get_client().chat.completions.create(
                 model=MODEL_NAME,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
@@ -382,8 +394,14 @@ def run_task(task_name: str) -> dict:
 
     try:
         reset_data = requests.post(
-            f"{BASE_URL}/reset", json={"task": task_name}
+            f"{BASE_URL}/reset", json={"task": task_name}, timeout=TIMEOUT
         ).json()
+    except requests.exceptions.Timeout:
+        print(f"[TIMEOUT] /reset timed out after {TIMEOUT}s for task '{task_name}'")
+        return {
+            "task_id": task_name, "steps": 0,
+            "total_reward": 0.0, "score": 0.0, "status": "timeout",
+        }
     except Exception as e:
         print(f"[error] /reset failed for task '{task_name}': {e}")
         return {
@@ -409,8 +427,13 @@ def run_task(task_name: str) -> dict:
     for step_num in range(1, max_steps + 1):
         try:
             obs = requests.get(
-                f"{BASE_URL}/state", params={"session_id": session_id}
+                f"{BASE_URL}/state", params={"session_id": session_id},
+                timeout=TIMEOUT,
             ).json()
+        except requests.exceptions.Timeout:
+            print(f"[TIMEOUT] /state timed out after {TIMEOUT}s at step {step_num}")
+            final_status = "timeout"
+            break
         except Exception as e:
             print(f"[error] /state failed at step {step_num}: {e}")
             final_status = "error"
@@ -435,7 +458,12 @@ def run_task(task_name: str) -> dict:
             data = requests.post(
                 f"{BASE_URL}/step",
                 json={"action": action, "session_id": session_id},
+                timeout=TIMEOUT,
             ).json()
+        except requests.exceptions.Timeout:
+            print(f"[TIMEOUT] /step timed out after {TIMEOUT}s at step {step_num}")
+            final_status = "timeout"
+            break
         except Exception as e:
             print(f"[error] /step failed at step {step_num}: {e}")
             final_status = "error"
@@ -459,7 +487,7 @@ def run_task(task_name: str) -> dict:
     try:
         analytics = requests.get(
             f"{BASE_URL}/analytics",
-            params={"session_id": session_id}, timeout=5,
+            params={"session_id": session_id}, timeout=TIMEOUT,
         ).json()
         soc = analytics.get("soc_metrics", {})
         net = analytics.get("network_status", {})
@@ -474,7 +502,7 @@ def run_task(task_name: str) -> dict:
     try:
         final_state = requests.get(
             f"{BASE_URL}/state",
-            params={"session_id": session_id}, timeout=5,
+            params={"session_id": session_id}, timeout=TIMEOUT,
         ).json()
         containment_events = final_state.get("episode_info", {}).get("containment_events", [])
         sb_scores = []
