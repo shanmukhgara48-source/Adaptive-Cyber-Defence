@@ -223,10 +223,20 @@ _FP_IOC_PROFILE: dict = {
 }
 
 
-def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False) -> dict:
+_HARD_DIFFICULTIES = {"hard", "nightmare", "elite", "impossible"}
+
+
+def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
+                difficulty: str = "easy") -> dict:
     """Generate initial behavioral IOC values for a new threat.
     These are stored on the internal threat dict and exposed in _visible_threats.
     The threat type itself is NOT exposed — agents must infer it from these signals.
+
+    Multiplicative noise (via session RNG) is applied to all IOC fields so identical
+    profiles produce varied signals — agents cannot memorise a fixed threshold lookup.
+    For hard+ difficulty, cross-signal contamination blends attack-class signatures
+    to simulate real-world multi-technique intrusions.
+    All randomness uses the session RNG exclusively to preserve seed determinism.
     """
     profile = _FP_IOC_PROFILE if is_fp else _IOC_PROFILES.get(t_type, _IOC_PROFILES["malware"])
     pps_lo, pps_hi = profile["packets_per_second"]
@@ -235,19 +245,62 @@ def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False) -> dict:
     lat_lo, lat_hi = profile["lateral_connection_count"]
     proc_lo, proc_hi = profile["unusual_process_count"]
     sr_lo, sr_hi   = profile["spread_rate"]
-    return {
-        "packets_per_second":       rng.randint(pps_lo, pps_hi),
-        "failed_auth_attempts":     rng.randint(auth_lo, auth_hi),
-        "outbound_data_bytes":      rng.randint(ob_lo, ob_hi),
-        "lateral_connection_count": rng.randint(lat_lo, lat_hi),
-        "unusual_process_count":    rng.randint(proc_lo, proc_hi),
-        "spread_rate":              round(rng.uniform(sr_lo, sr_hi), 3),
+
+    # Base values sampled from profile ranges
+    pps  = rng.randint(pps_lo, pps_hi)
+    auth = rng.randint(auth_lo, auth_hi)
+    ob   = rng.randint(ob_lo, ob_hi)
+    lat  = rng.randint(lat_lo, lat_hi)
+    proc = rng.randint(proc_lo, proc_hi)
+    sr   = round(rng.uniform(sr_lo, sr_hi), 3)
+
+    # Apply per-field multiplicative noise (session RNG only — determinism preserved)
+    def _ni(val: int, factor: float) -> int:
+        return max(0, int(val * (1 + rng.uniform(-factor, factor))))
+
+    pps  = _ni(pps,  0.35)
+    auth = _ni(auth, 0.35)
+    ob   = _ni(ob,   0.40)
+    lat  = _ni(lat,  0.30)
+    proc = _ni(proc, 0.30)
+    sr   = round(max(0.0, min(1.0, sr * (1 + rng.uniform(-0.20, 0.20)))), 3)
+
+    iocs = {
+        "packets_per_second":       pps,
+        "failed_auth_attempts":     auth,
+        "outbound_data_bytes":      ob,
+        "lateral_connection_count": lat,
+        "unusual_process_count":    proc,
+        "spread_rate":              sr,
         "is_persistent":            profile["is_persistent"],
         "affected_node_count":      1,
         "detection_confidence":     round(
             rng.uniform(0.3, 0.7) if is_fp else rng.uniform(0.6, 1.0), 3
         ),
     }
+
+    # Cross-signal contamination for hard+ tasks: real attacks blend multiple techniques.
+    # One rng.uniform() call is made unconditionally per eligible threat type so the
+    # RNG sequence advances the same number of steps regardless of contamination magnitude,
+    # keeping the post-spawn sequence stable across all hard+ task episodes.
+    if not is_fp and difficulty in _HARD_DIFFICULTIES:
+        contamination = rng.uniform(0.3, 0.6)
+        if t_type == "lateral_movement":
+            # Attacker reuses stolen credentials while traversing — adds auth-failure signal
+            iocs["failed_auth_attempts"] += int(rng.randint(45, 200) * contamination)
+        elif t_type == "ransomware":
+            # Stages data across nodes before encrypting — adds lateral-connection signal
+            iocs["lateral_connection_count"] += int(rng.randint(12, 38) * contamination)
+        elif t_type == "malware":
+            # C2 beaconing creates elevated network traffic — bleeds into DoS-like range
+            contamination2 = rng.uniform(0.2, 0.4)
+            iocs["packets_per_second"] += int(rng.randint(900, 9500) * contamination2)
+        else:
+            # Consume the contamination roll for non-contaminated types so the RNG
+            # sequence length is uniform across all hard+ threat types.
+            pass
+
+    return iocs
 
 
 def _evolve_iocs(t: dict, rng: random.Random) -> None:
@@ -423,14 +476,15 @@ def _compute_grader_score(sess: "Session") -> float:
     return _grader_formula(containment_rate, critical_health, resource_efficiency, speed_bonus)
 
 
-def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) -> list:
+def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None,
+                        task_name: str = "easy") -> list:
     """Make threats for a new episode using the given task config."""
     threats = []
     count = task_config.get("threat_count", 3)
     for idx in range(count):
         t_type = rng.choice(ATTACKS)
         node   = rng.choice(NODES)
-        iocs = _spawn_iocs(t_type, rng)
+        iocs = _spawn_iocs(t_type, rng, difficulty=task_name)
         threats.append({
             "id":              f"alert_{node}_{idx}",   # opaque — does not reveal threat type
             "type":            t_type,
@@ -467,14 +521,15 @@ def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None) ->
                     t["mitre_id"] = MITRE_MAP[new_type]
                     t["severity"] = _initial_severity(new_type, rng)
                     # Re-spawn IOCs for the overridden type; keep opaque id
-                    new_iocs = _spawn_iocs(new_type, rng)
+                    new_iocs = _spawn_iocs(new_type, rng, difficulty=task_name)
                     t.update(new_iocs)
     return threats
 
 
-def _fresh_state(task_config: dict, rng: random.Random, attacker=None) -> dict:
+def _fresh_state(task_config: dict, rng: random.Random, attacker=None,
+                 task_name: str = "easy") -> dict:
     return {
-        "threats": _make_threats_fixed(task_config, rng, attacker),
+        "threats": _make_threats_fixed(task_config, rng, attacker, task_name=task_name),
         "scanned_nodes": set(),
         "system_health": 100,
         "score": 0.0,
@@ -486,7 +541,8 @@ def _fresh_state(task_config: dict, rng: random.Random, attacker=None) -> dict:
 
 def _do_reset_session(sess: Session) -> None:
     """Reset all mutable fields on an existing Session object in-place."""
-    sess.state                  = _fresh_state(sess.task_config, sess.rng, sess.attacker)
+    sess.state                  = _fresh_state(sess.task_config, sess.rng, sess.attacker,
+                                               task_name=sess.task_name)
     sess.history                = []
     sess.episode_history        = []
     sess.episode_actions_taken  = []
@@ -601,7 +657,18 @@ def _maybe_generate_false_positive(sess: Session) -> None:
     fp_type = sess.rng.choice(ATTACKS)
     fp_node = sess.rng.choice(NODES)
     fp_idx = len(sess.state["threats"])
-    fp_iocs = _spawn_iocs(fp_type, sess.rng, is_fp=True)
+    fp_iocs = _spawn_iocs(fp_type, sess.rng, is_fp=True, difficulty=sess.task_name)
+    # With 40% probability, elevate one IOC to 60-80% of a real threat's level.
+    # This creates genuine decision risk — the FP looks like a real threat on one signal
+    # and forces the agent to weigh acting versus scanning for more evidence.
+    if sess.rng.random() < 0.4:
+        ioc_keys = ["packets_per_second", "failed_auth_attempts", "outbound_data_bytes",
+                    "lateral_connection_count", "unusual_process_count"]
+        chosen_ioc = sess.rng.choice(ioc_keys)
+        real_type  = sess.rng.choice(ATTACKS)
+        lo, hi     = _IOC_PROFILES[real_type][chosen_ioc]
+        elevation  = sess.rng.uniform(0.6, 0.8)
+        fp_iocs[chosen_ioc] = int(((lo + hi) / 2) * elevation)
     fp_threat = {
         "id": f"alert_{fp_node}_{fp_idx}",   # opaque — does not reveal FP or threat type
         "type": fp_type,
@@ -664,7 +731,8 @@ def _age_threats(sess: Session) -> None:
                             new_node = sess.rng.choice(free_nodes)
                             new_type = "lateral_movement"
                             new_idx = len(sess.state["threats"])
-                            child_iocs = _spawn_iocs(new_type, sess.rng)
+                            child_iocs = _spawn_iocs(new_type, sess.rng,
+                                                         difficulty=sess.task_name)
                             sess.state["threats"].append({
                                 "id": f"alert_{new_node}_{new_idx}",   # opaque spread child
                                 "type": new_type,
