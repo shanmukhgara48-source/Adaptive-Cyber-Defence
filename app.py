@@ -295,11 +295,11 @@ def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
     }
 
     # Cross-signal contamination for hard+ tasks: real attacks blend multiple techniques.
-    # One rng.uniform() call is made unconditionally per eligible threat type so the
-    # RNG sequence advances the same number of steps regardless of contamination magnitude,
-    # keeping the post-spawn sequence stable across all hard+ task episodes.
+    # Every branch consumes exactly 3 RNG calls (contamination, contamination2, one randint)
+    # so the post-spawn RNG sequence is identical regardless of threat type.
     if not is_fp and difficulty in _HARD_DIFFICULTIES:
-        contamination = rng.uniform(0.3, 0.6)
+        contamination = rng.uniform(0.3, 0.6)   # call 1 — always consumed
+        contamination2 = rng.uniform(0.2, 0.4)  # call 2 — always consumed
         if t_type == "lateral_movement":
             # Attacker reuses stolen credentials while traversing — adds auth-failure signal
             iocs["failed_auth_attempts"] += int(rng.randint(45, 200) * contamination)
@@ -308,12 +308,9 @@ def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
             iocs["lateral_connection_count"] += int(rng.randint(12, 38) * contamination)
         elif t_type == "malware":
             # C2 beaconing creates elevated network traffic — bleeds into DoS-like range
-            contamination2 = rng.uniform(0.2, 0.4)
             iocs["packets_per_second"] += int(rng.randint(900, 9500) * contamination2)
         else:
-            # Consume the contamination roll for non-contaminated types so the RNG
-            # sequence length is uniform across all hard+ threat types.
-            pass
+            _ = rng.randint(0, 1)  # call 3 — consumed to keep RNG sequence length uniform
 
     return iocs
 

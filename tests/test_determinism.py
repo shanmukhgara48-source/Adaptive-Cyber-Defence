@@ -44,6 +44,10 @@ def _assert_deterministic(task: str, seed: int, actions: list[str]) -> None:
     """Run two sessions with same seed+actions and assert reward sequences match."""
     r1 = _run_episode(task, seed, actions)
     r2 = _run_episode(task, seed, actions)
+    assert len(r1) == len(r2), (
+        f"Episode length mismatch for task={task!r} seed={seed}: "
+        f"len(r1)={len(r1)}, len(r2)={len(r2)}"
+    )
     assert r1 == r2, (
         f"Non-deterministic rewards for task={task!r} seed={seed}:\n"
         + "\n".join(
