@@ -326,17 +326,21 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
 """
 
     for attempt in range(1, MAX_RETRIES + 1):
-        response = _get_client().chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_prompt},
-            ],
-            max_tokens=LLM_MAX_TOKENS,
-            temperature=TEMPERATURE,
-        )
-        raw = response.choices[0].message.content or ""
-        raw = raw.lower().strip()
+        try:
+            response = _get_client().chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                max_tokens=LLM_MAX_TOKENS,
+                temperature=TEMPERATURE,
+            )
+        except Exception as e:
+            print(f"  [llm] attempt {attempt}/{MAX_RETRIES} API error: {e}")
+            continue
+
+        raw = (response.choices[0].message.content or "").lower().strip()
 
         action_name, target, reasoning = _parse_llm_response(raw)
 
@@ -358,10 +362,10 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
 
         return env_action, target
 
-    # ── Parse/map retries exhausted — scan highest-severity node ──────────────
+    # ── All retries exhausted — scan highest-severity node ────────────────────
     fallback = _fallback_action(threats, scanned_nodes)
     if VERBOSE:
-        print(f"  [llm] parse retries exhausted — fallback scan: {fallback}")
+        print(f"  [llm] retries exhausted — fallback scan: {fallback}")
     return fallback, ""
 
 
@@ -537,15 +541,18 @@ def run_task(task_name: str) -> dict:
 
 
 def run():
-    # Guaranteed startup probe — ensures at least one LLM call hits the proxy
-    # even if all task episodes exit early. Raises immediately on bad credentials.
+    # Guaranteed startup probe — fires one LLM call immediately so the proxy
+    # sees traffic even if task episodes exit early for any reason.
     print("[PROBE] Sending startup probe to LLM proxy...")
-    probe = _get_client().chat.completions.create(
-        model=MODEL_NAME,
-        messages=[{"role": "user", "content": "Reply OK"}],
-        max_tokens=5,
-    )
-    print(f"[PROBE] Proxy responded: {probe.choices[0].message.content!r}")
+    try:
+        probe = _get_client().chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": "Reply OK"}],
+            max_tokens=5,
+        )
+        print(f"[PROBE] Proxy responded: {probe.choices[0].message.content!r}")
+    except Exception as e:
+        print(f"[PROBE] Warning — probe call failed: {e}")
 
     results = []
     for task_name in TASKS:
