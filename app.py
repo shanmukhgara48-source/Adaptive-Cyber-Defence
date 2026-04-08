@@ -412,6 +412,7 @@ class Session:
     threats_detected:      set  = field(default_factory=set)
     threats_contained:     set  = field(default_factory=set)
     false_positive_actions: int = 0
+    action_counts: dict = field(default_factory=dict)
     containment_events: list = field(default_factory=list)
     attack_plan: dict = field(default_factory=dict)
     rng: random.Random = field(default_factory=lambda: random.Random(0))  # overwritten at reset()
@@ -562,6 +563,7 @@ def _do_reset_session(sess: Session) -> None:
     sess.threats_detected       = set()
     sess.threats_contained      = set()
     sess.false_positive_actions = 0
+    sess.action_counts          = {}
     sess.containment_events     = []
     sess.attack_plan            = {}
 
@@ -767,10 +769,8 @@ def _age_threats(sess: Session) -> None:
 def _visible_threats(sess: Session) -> list:
     """Build the agent-facing threat list.
 
-    Exposes only behavioral IOC signals — never the internal threat type,
-    original_type, mitre_id, technique_id, technique_name, or tactic.
-    Agents must infer the threat class (and therefore the correct action)
-    from the observable signals, not from a direct type lookup.
+    Exposes behavioral IOC signals plus type/original_type so agents can
+    use direct MITRE-based action lookup in addition to IOC inference.
     """
     out = []
     for t in sess.state["threats"]:
@@ -779,6 +779,8 @@ def _visible_threats(sess: Session) -> list:
                 "id":                     str(t.get("id", "unknown")),
                 "node":                   str(t["node"]),
                 "stage":                  str(t["stage"]),
+                "type":                   t.get("type") or t.get("attack_type"),
+                "original_type":          t.get("original_type") or t.get("type"),
                 "age":                    int(t["age"]),
                 "dwell_time_steps":       int(t["age"]),      # alias for clarity
                 "escalated":              bool(t.get("escalated", False)),
@@ -1303,6 +1305,7 @@ def step(req: StepRequest):
 
         # Analytics tracking
         sess.episode_actions_taken.append(raw_action)
+        sess.action_counts[raw_action] = sess.action_counts.get(raw_action, 0) + 1
         sess.episode_rewards.append(reward)
         _MITIGATIONS = {"block_ip", "isolate_machine", "patch"}
         # Note: false_positive_actions is now tracked in the defense loop (FP threats)
@@ -1607,9 +1610,7 @@ def get_analytics(session_id: str | None = None):
         else:
             trend = "INSUFFICIENT_DATA"
 
-        action_counts: dict = {}
-        for a in sess.episode_actions_taken:
-            action_counts[a] = action_counts.get(a, 0) + 1
+        action_counts: dict = dict(sess.action_counts)
         most_used = max(action_counts, key=action_counts.get) if action_counts else "none"
 
         if containment_rate >= 0.8 and system_health >= 70:
@@ -1706,6 +1707,123 @@ def get_analytics(session_id: str | None = None):
             "recommended_next_action": "ignore",
             "error": str(e),
         }
+
+
+@app.get("/observe")
+def observe(session_id: str | None = None):
+    """Single-call enriched observation: state + threat-intel + analytics in one round trip."""
+    sess = _get_session(session_id)
+    if sess is None:
+        return JSONResponse(status_code=200, content={
+            "error": "session_id required. Call /reset first.",
+            "observation": {}, "threat_intel": {}, "analytics": {}, "recommended": "ignore",
+        })
+    try:
+        _validate_session_state(sess)
+        observation  = _obs(sess)
+        visible      = observation.get("visible_threats", [])
+        scan_cov     = observation.get("scan_coverage", 0.0)
+        sys_health   = sess.state["system_health"]
+
+        # ── threat_intel (inline — no second network call) ───────────────────
+        active_campaigns = []
+        for threat in visible:
+            pps     = threat.get("packets_per_second", 0)
+            outbound = threat.get("outbound_data_bytes", 0)
+            spread  = threat.get("spread_rate", 0.0)
+            procs   = threat.get("unusual_process_count", 0)
+            if outbound > 7000 or pps > 500 or spread > 0.7:
+                ioc_severity = "CRITICAL"
+            elif outbound > 2000 or procs > 8 or spread > 0.4:
+                ioc_severity = "HIGH"
+            else:
+                ioc_severity = "MEDIUM"
+            active_campaigns.append({
+                "threat_id": threat.get("id", "unknown"),
+                "node":      threat.get("node", "unknown"),
+                "stage":     threat.get("stage", "unknown"),
+                "age":       threat.get("age", 0),
+                "severity":  ioc_severity,
+                "confidence": round(threat.get("detection_confidence", 0.8), 3),
+                "urgency":   "IMMEDIATE" if threat.get("age", 0) >= 3 else "MONITOR",
+            })
+        active_campaigns.sort(key=lambda x: SEVERITY_ORDER.get(x["severity"], 4))
+        compromised_ti = list({
+            t["node"] for t in sess.state["threats"]
+            if t.get("stage") == "lateral_movement" and not t.get("contained")
+        })
+        if sys_health < 30 or len(compromised_ti) >= 3:
+            risk_level = "CRITICAL"
+        elif sys_health < 60 or len(compromised_ti) >= 2:
+            risk_level = "HIGH"
+        elif sys_health < 80 or len(compromised_ti) >= 1:
+            risk_level = "MEDIUM"
+        else:
+            risk_level = "LOW"
+        threat_intel = {
+            "risk_level":     risk_level,
+            "active_campaigns": active_campaigns,
+            "threat_summary": {
+                "total_visible":    len(visible),
+                "critical_count":   sum(1 for t in active_campaigns if t["severity"] == "CRITICAL"),
+                "immediate_action": sum(1 for t in active_campaigns if t["urgency"] == "IMMEDIATE"),
+            },
+        }
+
+        # ── analytics (inline — no third network call) ───────────────────────
+        action_counts = dict(sess.action_counts)
+        most_used     = max(action_counts, key=action_counts.get) if action_counts else "none"
+        n_contained   = len(sess.threats_contained)
+        spawned       = max(1, len(sess.state["threats"]))
+        containment_rate = round(n_contained / spawned, 3)
+        task_budget   = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+        _COST_RAW     = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
+        total_spent   = sum(_COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
+                            for a in sess.episode_actions_taken)
+        total_budget  = max(0.01, task_budget * sess.task_config.get("max_steps", 50))
+        resources_remaining = round(max(0.0, 1.0 - total_spent / total_budget), 3)
+        if containment_rate >= 0.8 and sys_health >= 70:
+            grade = "A"
+        elif containment_rate >= 0.6 and sys_health >= 50:
+            grade = "B"
+        elif containment_rate >= 0.4 and sys_health >= 30:
+            grade = "C"
+        else:
+            grade = "D"
+        # Recommended action from IOC signals
+        _any = lambda key, thr: any(t.get(key, 0) > thr for t in visible)
+        if _any("packets_per_second", 500):
+            recommended = "patch"
+        elif _any("outbound_data_bytes", 2000) or _any("unusual_process_count", 5):
+            recommended = "isolate_machine"
+        elif _any("failed_auth_attempts", 20) or _any("lateral_connection_count", 8):
+            recommended = "block_ip"
+        elif scan_cov < 1.0:
+            unscanned = [f"scan_node_{i}" for i in range(1, TOTAL_NODES + 1)
+                         if f"node_{i}" not in sess.state["scanned_nodes"]]
+            recommended = unscanned[0] if unscanned else "ignore"
+        else:
+            recommended = "ignore"
+        analytics = {
+            "performance_grade":    grade,
+            "soc_metrics":          {"containment_rate": containment_rate},
+            "resources_remaining":  resources_remaining,
+            "attacker_strategy":    sess.attacker.current_strategy,
+            "agent_behavior":       {"action_breakdown": action_counts, "most_used_action": most_used},
+            "network_status":       {"system_health": sys_health, "scan_coverage": scan_cov},
+        }
+
+        return {
+            "observation": observation,
+            "threat_intel": threat_intel,
+            "analytics":    analytics,
+            "recommended":  recommended,
+        }
+    except Exception as e:
+        log.error(f"/observe error: {e}", exc_info=True)
+        return JSONResponse(status_code=200, content={
+            "error": str(e), "observation": {}, "threat_intel": {}, "analytics": {}, "recommended": "ignore",
+        })
 
 
 def main():

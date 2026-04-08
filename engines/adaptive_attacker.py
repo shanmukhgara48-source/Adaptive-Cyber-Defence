@@ -39,18 +39,23 @@ class DefenderBehaviorProfile:
     patch_rate:     float = 0.0
     steps_observed: int   = 0
     episodes_observed: int = 0
+    rates_dirty: bool = field(default=True, repr=False)
+
+    def _recalculate_rates(self) -> None:
+        if not self.rates_dirty:
+            return
+        total = max(1, self.steps_observed)
+        self.isolation_rate = self.action_counts.get("ISOLATE_NODE", 0) / total
+        self.block_rate     = self.action_counts.get("BLOCK_IP",     0) / total
+        self.scan_rate      = self.action_counts.get("SCAN",         0) / total
+        self.patch_rate     = self.action_counts.get("PATCH_VULNERABILITY", 0) / total
+        self.rates_dirty   = False
 
     def record_action(self, action_name: str, threat_type: str = "UNKNOWN") -> None:
         self.action_counts[action_name] += 1
         self.actions_per_threat_type[threat_type][action_name] += 1
         self.steps_observed += 1
-        total = max(1, self.steps_observed)
-        self.isolation_rate = self.action_counts.get("ISOLATE_NODE", 0) / total
-        self.block_rate     = self.action_counts.get("BLOCK_IP",     0) / total
-        self.scan_rate      = self.action_counts.get("SCAN",         0) / total
-        self.patch_rate     = (
-            self.action_counts.get("PATCH_VULNERABILITY", 0) / total
-        )
+        self.rates_dirty = True
 
     def get_most_used_action(self) -> str:
         if not self.action_counts:
@@ -58,6 +63,7 @@ class DefenderBehaviorProfile:
         return max(self.action_counts, key=self.action_counts.get)
 
     def get_defender_strategy_label(self) -> str:
+        self._recalculate_rates()
         if self.isolation_rate > 0.4:
             return "ISOLATOR"
         elif self.block_rate > 0.4:
@@ -227,6 +233,7 @@ class AdaptiveAttacker:
         strategy, reasoning = self.choose_attack_strategy()
         self.current_strategy = strategy
 
+        self.defender_profile._recalculate_rates()
         plan = {
             "episode":          self.episode_count + 1,
             "attack_strategy":  strategy,

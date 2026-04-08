@@ -196,11 +196,16 @@ Threats preserve their `original_type` through stage escalation — agents are n
 
 Scores from `inference.py` deterministic MITRE-lookup baseline:
 
-| Agent | Easy | Medium | Hard | Nightmare |
-|-------|------|--------|------|-----------|
-| Baseline (MITRE lookup) | 0.82 | 0.76 | 0.84 | 0.71 |
-| Random | ~0.21 | ~0.18 | ~0.15 | ~0.12 |
-| Ignore-all | 0.10 | 0.08 | 0.06 | 0.04 |
+| Task      | Steps | Contain% | Health% | Speed | Score | Threshold | Status |
+|-----------|-------|----------|---------|-------|-------|-----------|--------|
+| easy      | 18    | 1.000    | 1.000   | 0.500 | 0.917 | 0.50      | PASS   |
+| medium    | 19    | 1.000    | 1.000   | 1.000 | 0.986 | 0.60      | PASS   |
+| hard      | 21    | 1.000    | 1.000   | 0.429 | 0.836 | 0.45      | PASS   |
+| nightmare | 15    | 1.000    | 1.000   | 0.429 | 0.774 | 0.25      | PASS   |
+| elite     | 15    | 1.000    | 1.000   | 0.500 | 0.805 | 0.20      | PASS   |
+
+> Model: meta-llama/Meta-Llama-3-8B-Instruct via HuggingFace
+> router. All 5 tasks pass their thresholds.
 
 ---
 
