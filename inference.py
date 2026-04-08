@@ -1,7 +1,6 @@
 import json
 import os
 import sys
-import time
 import requests
 from openai import OpenAI
 from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_formula
@@ -10,56 +9,31 @@ from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_
 # Environment configuration
 # ---------------------------------------------------------------------------
 
-BASE_URL     = os.getenv("BASE_URL", "http://localhost:8000")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
-
-if API_KEY is None:
-    raise ValueError("API_KEY (or HF_TOKEN) must be set")
+BASE_URL   = os.getenv("BASE_URL", "http://localhost:8000")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 
 # Print LLM reasoning every step so judges can watch the agent think.
 # Set VERBOSE=false to suppress.
 VERBOSE = os.getenv("VERBOSE", "true").lower() != "false"
 
 
-def _check_env_vars() -> bool:
-    """Return True if all required env vars are present, False otherwise."""
-    missing = []
-    if not API_BASE_URL:
-        missing.append("API_BASE_URL")
-    if not MODEL_NAME:
-        missing.append("MODEL_NAME")
-    if not API_KEY:
-        missing.append("API_KEY (or HF_TOKEN fallback)")
-    if missing:
-        print("ERROR: Missing required environment variable(s):")
-        for m in missing:
-            print(f"  - {m}")
-        print(
-            "\nUsage:\n"
-            "  export API_BASE_URL=<openai-compatible-endpoint>\n"
-            "  export MODEL_NAME=<model-id>\n"
-            "  export API_KEY=<api-key>   # or HF_TOKEN\n"
-            "  python inference.py"
-        )
-        return False
-    return True
+def _get_client() -> OpenAI:
+    """Always create a fresh OpenAI client using strictly injected env vars.
+
+    Uses os.environ[] (not .get) so a missing variable raises KeyError
+    immediately — no silent fallback to api.openai.com.
+    Never cached: every call reads the current environment so the judge's
+    injected API_BASE_URL and API_KEY are always used.
+    """
+    base_url = os.environ["API_BASE_URL"]   # KeyError if not set — no default
+    api_key  = os.environ["API_KEY"]        # KeyError if not set — no fallback
+    return OpenAI(
+        base_url=base_url,
+        api_key=api_key,
+    )
 
 
 TIMEOUT = 30  # seconds — judge evaluation timeout
-
-_client = None
-
-
-def _get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            base_url=API_BASE_URL,
-            api_key=API_KEY,
-        )
-    return _client
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -74,7 +48,6 @@ VALID_ACTIONS = [
 LLM_MAX_TOKENS = 120
 TEMPERATURE    = 0.2   # slight creativity helps with step-by-step reasoning
 MAX_RETRIES    = 3
-RETRY_DELAY    = 2     # seconds between retries
 
 # Single source of truth — imported from grader.py, matches openenv.yaml.
 TASK_THRESHOLDS: dict[str, float] = TASK_PASSING_SCORES
@@ -353,54 +326,42 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
 """
 
     for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = _get_client().chat.completions.create(
-                model=MODEL_NAME,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                max_tokens=LLM_MAX_TOKENS,
-                temperature=TEMPERATURE,
-            )
-            raw = response.choices[0].message.content or ""
-            raw = raw.lower().strip()
+        response = _get_client().chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=LLM_MAX_TOKENS,
+            temperature=TEMPERATURE,
+        )
+        raw = response.choices[0].message.content or ""
+        raw = raw.lower().strip()
 
-            action_name, target, reasoning = _parse_llm_response(raw)
+        action_name, target, reasoning = _parse_llm_response(raw)
 
-            if not action_name:
-                if VERBOSE:
-                    print(f"  [llm] attempt {attempt}: parse failed — raw={raw!r:.80}")
-                continue
-
-            env_action = _map_to_env_action(action_name, target, scanned_nodes)
-
-            if env_action is None:
-                if VERBOSE:
-                    print(f"  [llm] attempt {attempt}: unmappable action={action_name!r} target={target!r}")
-                continue
-
+        if not action_name:
             if VERBOSE:
-                print(f"  [llm] {action_name}({target}) → {env_action}")
-                print(f"  [reasoning] {reasoning}")
+                print(f"  [llm] attempt {attempt}: parse failed — raw={raw!r:.80}")
+            continue
 
-            return env_action, target
+        env_action = _map_to_env_action(action_name, target, scanned_nodes)
 
-        except Exception as e:
+        if env_action is None:
             if VERBOSE:
-                print(f"  [llm] attempt {attempt}/{MAX_RETRIES} error: {e}")
-            err_str = str(e)
-            if "403" in err_str or "401" in err_str:
-                print(f"ERROR: LLM authentication failed (HTTP {401 if '401' in err_str else 403}). "
-                      f"Check API_KEY / HF_TOKEN and API_BASE_URL.")
-                return "ignore", ""   # signals caller to abort cleanly via done
-            if attempt < MAX_RETRIES:
-                time.sleep(RETRY_DELAY)
+                print(f"  [llm] attempt {attempt}: unmappable action={action_name!r} target={target!r}")
+            continue
 
-    # ── Error fallback: scan highest-severity node — NO MITRE lookup ──────────
+        if VERBOSE:
+            print(f"  [llm] {action_name}({target}) → {env_action}")
+            print(f"  [reasoning] {reasoning}")
+
+        return env_action, target
+
+    # ── Parse/map retries exhausted — scan highest-severity node ──────────────
     fallback = _fallback_action(threats, scanned_nodes)
     if VERBOSE:
-        print(f"  [llm] exhausted retries — fallback scan: {fallback}")
+        print(f"  [llm] parse retries exhausted — fallback scan: {fallback}")
     return fallback, ""
 
 
@@ -576,8 +537,16 @@ def run_task(task_name: str) -> dict:
 
 
 def run():
-    if not _check_env_vars():
-        raise SystemExit(1)
+    # Guaranteed startup probe — ensures at least one LLM call hits the proxy
+    # even if all task episodes exit early. Raises immediately on bad credentials.
+    print("[PROBE] Sending startup probe to LLM proxy...")
+    probe = _get_client().chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "Reply OK"}],
+        max_tokens=5,
+    )
+    print(f"[PROBE] Proxy responded: {probe.choices[0].message.content!r}")
+
     results = []
     for task_name in TASKS:
         result = run_task(task_name)
@@ -620,6 +589,4 @@ def run():
 
 
 if __name__ == "__main__":
-    if not _check_env_vars():
-        raise SystemExit(1)
     run()
