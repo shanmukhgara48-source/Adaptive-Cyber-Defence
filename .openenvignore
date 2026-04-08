@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.DS_Store
+*.log
+node_modules/
+dist/
+build/
+.pytest_cache/
+training/phase*.json
+training/training_history.json
+validation_results.json
+uv.lock

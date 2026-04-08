@@ -10,7 +10,7 @@ impossible. The kill chain advances every single step.
 
 Win condition: prevent total network collapse — contain at least 3 of 5
 threats before critical asset health reaches zero.
-Passing score: 0.20 (designed for frontier models only)
+Passing score: 0.88 (designed for frontier models only)
 """
 
 from .base import BaseTask, TaskConfig
@@ -35,5 +35,5 @@ class EliteTask(BaseTask):
         false_positive_rate=0.40,
         false_negative_rate=0.70,
         base_detection_prob=0.10,
-        passing_score=0.20,
+        passing_score=0.88,
     )

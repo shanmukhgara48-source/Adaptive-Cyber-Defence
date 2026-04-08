@@ -15,7 +15,7 @@ A random agent scores ~0.10. A perfect agent scores ~0.70.
 
 Win condition: contain at least 3 of 5 threats before
 critical asset health reaches zero.
-Passing score: 0.25 (intentionally very hard)
+Passing score: 0.80 (requires near-optimal strategy)
 """
 
 from .base import BaseTask, TaskConfig
@@ -41,5 +41,5 @@ class NightmareTask(BaseTask):
         false_positive_rate=0.35,
         false_negative_rate=0.70,
         base_detection_prob=0.10,
-        passing_score=0.25,
+        passing_score=0.80,
     )

@@ -74,6 +74,9 @@ TEMPERATURE    = 0.2   # slight creativity helps with step-by-step reasoning
 MAX_RETRIES    = 3
 RETRY_DELAY    = 2     # seconds between retries
 
+# Single source of truth — imported from grader.py, matches openenv.yaml.
+TASK_THRESHOLDS: dict[str, float] = TASK_PASSING_SCORES
+
 TASKS = ["easy", "medium", "hard", "nightmare", "elite"]
 
 TASK_MAX_STEPS: dict[str, int] = {
@@ -151,24 +154,12 @@ Examples of valid responses:
 # ---------------------------------------------------------------------------
 
 def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> dict:
-    """Fetch enriched observation via single /observe call (1 round trip instead of 3)."""
-    params = {"session_id": session_id} if session_id else {}
-    try:
-        data     = requests.get(f"{base_url}/observe", params=params, timeout=TIMEOUT).json()
-        enriched = dict(data.get("observation") or obs)
-        intel    = data.get("threat_intel", {})
-        analytics = data.get("analytics", {})
-        enriched["risk_level"]          = intel.get("risk_level", "UNKNOWN")
-        enriched["threat_summary"]      = intel.get("threat_summary", {})
-        enriched["performance_grade"]   = analytics.get("performance_grade", "?")
-        enriched["containment_rate"]    = analytics.get("soc_metrics", {}).get("containment_rate", 0.0)
-        enriched["resources_remaining"] = analytics.get("resources_remaining", 0.5)
-        enriched["attacker_strategy"]   = analytics.get("attacker_strategy", "UNKNOWN")
-        return enriched
-    except Exception:
-        pass
+    """Enrich the base observation with analytics and threat-intel data.
 
-    # Fallback: /observe unavailable — use obs as-is with safe defaults
+    Fetches /analytics and /threat-intel in parallel (two calls) and merges
+    the results into the observation dict. Falls back gracefully if either
+    endpoint is unavailable.
+    """
     enriched = dict(obs)
     enriched.setdefault("risk_level",          "UNKNOWN")
     enriched.setdefault("threat_summary",      {})
@@ -176,6 +167,24 @@ def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> 
     enriched.setdefault("containment_rate",    0.0)
     enriched.setdefault("resources_remaining", 0.5)
     enriched.setdefault("attacker_strategy",   "UNKNOWN")
+
+    params = {"session_id": session_id} if session_id else {}
+    try:
+        analytics = requests.get(f"{base_url}/analytics", params=params, timeout=TIMEOUT).json()
+        enriched["performance_grade"]   = analytics.get("performance_grade", "?")
+        enriched["containment_rate"]    = analytics.get("soc_metrics", {}).get("containment_rate", 0.0)
+        enriched["resources_remaining"] = analytics.get("resources_remaining", 0.5)
+        enriched["attacker_strategy"]   = analytics.get("agent_behavior", {}).get("attacker_strategy", "UNKNOWN")
+    except Exception:
+        pass
+
+    try:
+        intel = requests.get(f"{base_url}/threat-intel", params=params, timeout=TIMEOUT).json()
+        enriched["risk_level"]     = intel.get("risk_level", "UNKNOWN")
+        enriched["threat_summary"] = intel.get("threat_summary", {})
+    except Exception:
+        pass
+
     return enriched
 
 
@@ -285,49 +294,6 @@ def choose_action(
     """Always call the LLM to choose an action.
     The only non-LLM path is the error fallback (API timeout / parse failure).
     """
-    # ── Deterministic pre-LLM check: apply known MITRE action to exact node ─────
-    MITRE_ACTION = {
-        "phishing":         "block_ip",
-        "malware":          "isolate_machine",
-        "ransomware":       "isolate_machine",
-        "ddos":             "patch",
-        "lateral_movement": "block_ip",
-    }
-    STAGE_ACTION = {
-        "lateral_movement": "block_ip",
-        "reconnaissance":   "block_ip",
-        "exfiltration":     "isolate_machine",
-        "initial":          "block_ip",
-    }
-    visible = obs.get("visible_threats", [])
-    if not visible:
-        all_nodes = ["node_1", "node_2", "node_3", "node_4", "node_5"]
-        scanned_list = obs.get("scanned_nodes", [])
-        for node in all_nodes:
-            if node not in scanned_list and node not in scanned_nodes:
-                node_num = node.replace("node_", "")
-                return f"scan_node_{node_num}", node
-        return "ignore", ""
-    for threat in visible:
-        t_type  = threat.get("original_type") or threat.get("type", "")
-        t_node  = threat.get("node") or threat.get("current_node", "")
-        t_stage = threat.get("stage", "")
-
-        if threat.get("is_false_positive"):
-            continue
-
-        # Try type-based action first
-        action = MITRE_ACTION.get(t_type.lower()) if t_type else None
-
-        # Fall back to stage-based action if type is None
-        if not action and t_stage:
-            action = STAGE_ACTION.get(t_stage.lower())
-
-        print(f"[action] type={t_type} stage={t_stage} node={t_node} → {action}")
-
-        if action and t_node:
-            return action, t_node
-
     enriched       = get_enriched_observation(base_url, obs, session_id)
     threats        = enriched.get("visible_threats", [])
     coverage       = enriched.get("scan_coverage", 0.0)
@@ -423,7 +389,9 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
                 print(f"  [llm] attempt {attempt}/{MAX_RETRIES} error: {e}")
             err_str = str(e)
             if "403" in err_str or "401" in err_str:
-                break  # auth error — no point retrying
+                print(f"ERROR: LLM authentication failed (HTTP {401 if '401' in err_str else 403}). "
+                      f"Check HF_TOKEN / OPENAI_API_KEY / API_KEY and API_BASE_URL.")
+                return "ignore", ""   # signals caller to abort cleanly via done
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
 
@@ -480,7 +448,6 @@ def run_task(task_name: str) -> dict:
     last_reward     = 0.0
     scanned_nodes: set = set()
     step_num        = 0
-    max_health_seen = 0
 
     print(f"{'Step':<6} {'Env Action':<22} {'Reward':<8} {'Env Reason'}")
     print("-" * 70)
@@ -500,10 +467,6 @@ def run_task(task_name: str) -> dict:
             print(f"[error] /state failed at step {step_num}: {e}")
             final_status = "error"
             break
-
-        sys_health = obs.get("system_health", obs.get("health", 0))
-        if isinstance(sys_health, (int, float)):
-            max_health_seen = max(max_health_seen, int(sys_health))
 
         if obs.get("done"):
             final_status = "done"
@@ -570,31 +533,19 @@ def run_task(task_name: str) -> dict:
             params={"session_id": session_id}, timeout=TIMEOUT,
         ).json()
         episode_info = final_state.get("episode_info", {})
-        print(f"[debug] episode_info = {episode_info}")
-        print(f"[debug] grader_breakdown = {episode_info.get('grader_breakdown', {})}")
-        print(f"[debug] critical_health = {episode_info.get('critical_health')}")
-        print(f"[debug] weighted_score = {episode_info.get('grader_breakdown', {}).get('weighted_score')}")
 
+        # Read all four components from the server's authoritative episode_info.
+        # The server computes these correctly at episode end using the same
+        # grader.py formula; do NOT post-process or correct these values.
         containment_rate  = float(episode_info.get("containment_rate",   0.0))
+        critical_health   = float(episode_info.get("critical_health",    0.0))
         avg_resource_left = float(episode_info.get("resources_remaining", 0.0))
         speed_bonus       = float(episode_info.get("speed_bonus",         0.0))
 
-        # Use max health seen during episode — server returns 0 at episode end
-        tracked_health = max_health_seen / 100.0
-        critical_health = tracked_health
-
-        breakdown = episode_info.get("grader_breakdown", {})
-        if "grader_score" in breakdown:
-            server_score = float(breakdown["grader_score"])
-            # Server computed health=0, so add our tracked health contribution back
-            score = min(1.0, server_score + 0.20 * tracked_health)
-            score = round(score, 3)
-        else:
-            score = (0.50 * containment_rate
-                     + 0.20 * tracked_health
-                     + 0.15 * avg_resource_left
-                     + 0.15 * speed_bonus)
-            score = round(max(0.0, min(1.0, score)), 3)
+        # Use the authoritative grader formula — single source of truth.
+        score = _compute_grader_formula(
+            containment_rate, critical_health, avg_resource_left, speed_bonus
+        )
     except Exception:
         pass
 
@@ -620,15 +571,6 @@ def run_task(task_name: str) -> dict:
 # ---------------------------------------------------------------------------
 # Main: run all tasks and print summary
 # ---------------------------------------------------------------------------
-
-TASK_THRESHOLDS: dict[str, float] = {
-    "easy":       0.50,
-    "medium":     0.60,
-    "hard":       0.45,
-    "nightmare":  0.25,
-    "elite":      0.20,
-    "impossible": 0.10,
-}
 
 
 def run():

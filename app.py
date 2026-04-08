@@ -335,12 +335,12 @@ def _evolve_iocs(t: dict, rng: random.Random) -> None:
     )
 
 TASKS = [
-    {"id": 1, "difficulty": "easy",       "passing_score": TASK_PASSING_SCORES["easy"],       "goal": "Three simultaneous attacks. High detection, generous resources. Contain all before lateral spread."},
-    {"id": 2, "difficulty": "medium",     "passing_score": TASK_PASSING_SCORES["medium"],     "goal": "Two intrusions with limited resources, FP noise. Prioritise threats."},
-    {"id": 3, "difficulty": "hard",       "passing_score": TASK_PASSING_SCORES["hard"],       "goal": "APT across 5 nodes. Low detection, scarce resources, fast progression."},
-    {"id": 4, "difficulty": "nightmare",  "passing_score": TASK_PASSING_SCORES["nightmare"],  "goal": "Nation-state APT. Near-zero detection, 15 steps. Designed for frontier LLMs."},
-    {"id": 5, "difficulty": "elite",      "passing_score": TASK_PASSING_SCORES["elite"],      "goal": "Persistent threat with insider access. All nodes pre-compromised. Kill chain advances every step."},
-    {"id": 6, "difficulty": "impossible", "passing_score": TASK_PASSING_SCORES["impossible"], "goal": "AI-driven attacker with perfect counter-strategy. Exists to show environment has no ceiling."},
+    {"id": "easy",       "name": "Easy Defense",      "difficulty": "easy",       "passing_score": TASK_PASSING_SCORES["easy"],       "max_steps": 30,  "description": "Three simultaneous attacks. High detection, generous resources. Contain all before lateral spread."},
+    {"id": "medium",     "name": "Medium Defense",    "difficulty": "medium",     "passing_score": TASK_PASSING_SCORES["medium"],     "max_steps": 50,  "description": "Two intrusions with limited resources, FP noise. Requires threat prioritisation."},
+    {"id": "hard",       "name": "Hard Defense",      "difficulty": "hard",       "passing_score": TASK_PASSING_SCORES["hard"],       "max_steps": 30,  "description": "APT across 5 nodes. Low detection, scarce resources, fast progression."},
+    {"id": "nightmare",  "name": "Nightmare Defense", "difficulty": "nightmare",  "passing_score": TASK_PASSING_SCORES["nightmare"],  "max_steps": 15,  "description": "Nation-state APT. Near-zero detection, 15 steps. Designed to challenge frontier LLMs."},
+    {"id": "elite",      "name": "Elite Defense",     "difficulty": "elite",      "passing_score": TASK_PASSING_SCORES["elite"],      "max_steps": 15,  "description": "Persistent threat with insider access. All nodes pre-compromised. Kill chain advances every step."},
+    {"id": "impossible", "name": "Impossible Defense","difficulty": "impossible", "passing_score": TASK_PASSING_SCORES["impossible"], "max_steps": 10,  "description": "AI-driven attacker with perfect counter-strategy. Ceiling benchmark — no passing threshold."},
 ]
 
 
@@ -769,8 +769,9 @@ def _age_threats(sess: Session) -> None:
 def _visible_threats(sess: Session) -> list:
     """Build the agent-facing threat list.
 
-    Exposes behavioral IOC signals plus type/original_type so agents can
-    use direct MITRE-based action lookup in addition to IOC inference.
+    Exposes ONLY behavioral IOC signals. type/original_type are intentionally
+    withheld per spec — agents must classify from packet rates, auth failures,
+    lateral connections, and outbound bytes, not from ground-truth labels.
     """
     out = []
     for t in sess.state["threats"]:
@@ -779,8 +780,8 @@ def _visible_threats(sess: Session) -> list:
                 "id":                     str(t.get("id", "unknown")),
                 "node":                   str(t["node"]),
                 "stage":                  str(t["stage"]),
-                "type":                   t.get("type") or t.get("attack_type"),
-                "original_type":          t.get("original_type") or t.get("type"),
+                # type/original_type intentionally withheld per spec — agents must
+                # classify from behavioral IOC signals, not from a label lookup.
                 "age":                    int(t["age"]),
                 "dwell_time_steps":       int(t["age"]),      # alias for clarity
                 "escalated":              bool(t.get("escalated", False)),

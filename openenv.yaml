@@ -171,7 +171,7 @@ action_space:
     - scan_node_5
 
 reward:
-  range: [-0.30, 1.0]
+  range: [-0.30, 0.775]
   description: >
     Mitigation actions are normalized via (raw + 2.0) / 4.0 → [0.0, 1.0]:
       Correct mitigation: raw 1.0 → 0.750 (early bonus if threat age < 3: raw 1.1 → 0.775).

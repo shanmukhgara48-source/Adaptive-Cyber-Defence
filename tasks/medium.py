@@ -10,7 +10,7 @@ add noise to the alert queue.
 
 Win condition: contain both threats before exfiltration occurs on any critical
 asset, without exhausting resources mid-episode.
-Passing score: 0.60
+Passing score: 0.55
 """
 
 from .base import BaseTask, TaskConfig
@@ -35,5 +35,5 @@ class MediumTask(BaseTask):
         false_positive_rate=0.12,       # moderate alert noise
         false_negative_rate=0.30,
         base_detection_prob=0.45,
-        passing_score=0.60,
+        passing_score=0.55,
     )

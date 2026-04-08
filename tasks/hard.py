@@ -13,7 +13,7 @@ exfiltrated within ~8 steps.
 
 Win condition: prevent exfiltration from any critical asset and contain at least
 2 of 5 threats.
-Passing score: 0.45  (lower bar — this is genuinely hard)
+Passing score: 0.70
 """
 
 from .base import BaseTask, TaskConfig
@@ -38,5 +38,5 @@ class HardTask(BaseTask):
         false_positive_rate=0.20,       # high noise — many ghost alerts
         false_negative_rate=0.55,       # attacker evades detection often
         base_detection_prob=0.20,       # low baseline detection
-        passing_score=0.45,
+        passing_score=0.70,
     )

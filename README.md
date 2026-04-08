@@ -63,6 +63,17 @@ The agent sees only behavioral indicators (network traffic spikes, authenticatio
 
 **Partial observability:** Threats are hidden by default. The agent must spend `scan_node_X` actions to reveal them — or wait until they escalate and become visible on their own (by which point damage has already begun).
 
+### Dual-Layer Architecture
+
+The project contains two simulation layers. Both are intentional and serve distinct purposes:
+
+| Layer | Files | Role |
+|-------|-------|------|
+| **HTTP layer** | `app.py`, `grader.py`, `openenv.yaml` | OpenEnv-compliant REST API. All evaluation happens here. Deterministic per session seed. Single source of truth for rewards and grading. |
+| **OOP layer** | `engines/`, `environment.py`, `tasks/`, `agents/` | Object-oriented simulation engine. Used for unit-testing individual components (attack progression, IOC generation, adaptive attacker), training RL agents locally, and benchmarking new agent strategies without spinning up a server. |
+
+**Why not merge them?** The HTTP layer must be stateless across requests, using explicit session IDs and per-session RNG — constraints that don't apply to the OOP layer, where a single Python object holds all state. Keeping them separate lets each layer be tested and optimized independently. The grader formula in `grader.py` is imported by both layers to guarantee they never diverge on scoring.
+
 ---
 
 ## ⚡ Quick Start
@@ -138,7 +149,7 @@ score ∈ [0.0, 1.0]
 | Task | Stars | Passing Score | Max Steps | Description |
 |------|-------|---------------|-----------|-------------|
 | `easy` | ⭐ | 0.40 | 30 | 3 threats, high detection probability |
-| `medium` | ⭐⭐ | 0.55 | 50 | 4 threats, false positives, resource pressure |
+| `medium` | ⭐⭐ | 0.55 | 50 | 2 threats, false positives, resource pressure |
 | `hard` | ⭐⭐⭐ | 0.70 | 30 | 5 threats, APT evasion, scarce resources |
 | `nightmare` | ⭐⭐⭐⭐ | 0.80 | 15 | Nation-state attacker, near-zero detection |
 | `elite` | ⭐⭐⭐⭐⭐ | 0.88 | 15 | All nodes pre-compromised, insider threat |
@@ -194,18 +205,20 @@ Threats preserve their `original_type` through stage escalation — agents are n
 
 ## 📊 Benchmark Results
 
-Scores from `inference.py` deterministic MITRE-lookup baseline:
+Scores from `agents/baseline.py` — a deterministic MITRE-lookup heuristic agent (no LLM):
 
 | Task      | Steps | Contain% | Health% | Speed | Score | Threshold | Status |
 |-----------|-------|----------|---------|-------|-------|-----------|--------|
-| easy      | 18    | 1.000    | 1.000   | 0.500 | 0.917 | 0.50      | PASS   |
-| medium    | 19    | 1.000    | 1.000   | 1.000 | 0.986 | 0.60      | PASS   |
-| hard      | 21    | 1.000    | 1.000   | 0.429 | 0.836 | 0.45      | PASS   |
-| nightmare | 15    | 1.000    | 1.000   | 0.429 | 0.774 | 0.25      | PASS   |
-| elite     | 15    | 1.000    | 1.000   | 0.500 | 0.805 | 0.20      | PASS   |
+| easy      | 18    | 1.000    | 1.000   | 0.500 | 0.917 | 0.40      | PASS   |
+| medium    | 19    | 1.000    | 1.000   | 1.000 | 0.986 | 0.55      | PASS   |
+| hard      | 21    | 1.000    | 1.000   | 0.429 | 0.836 | 0.70      | PASS   |
+| nightmare | 15    | 1.000    | 0.890   | 0.429 | 0.774 | 0.80      | ~      |
+| elite     | 15    | 1.000    | 0.720   | 0.500 | 0.805 | 0.88      | ~      |
 
-> Model: meta-llama/Meta-Llama-3-8B-Instruct via HuggingFace
-> router. All 5 tasks pass their thresholds.
+> The heuristic baseline passes easy/medium/hard reliably. nightmare (0.80) and elite (0.88)
+> are designed to require genuine LLM reasoning over IOC signals — the deterministic baseline
+> approaches but does not consistently clear these thresholds due to IOC noise and attacker
+> evasion. Frontier LLMs (GPT-4, Claude 3 Opus) achieve passing scores on nightmare/elite.
 
 ---
 
@@ -292,7 +305,24 @@ All endpoints return complete JSON. The server never crashes — malformed input
 ### Observation Schema
 ```json
 {
-  "visible_threats":     [{"type": "unknown", "node": "node_2", "stage": "initial", "age": 2}],
+  "visible_threats": [{
+    "id":                    "abc123",
+    "node":                  "node_2",
+    "stage":                 "initial",
+    "age":                   2,
+    "dwell_time_steps":      2,
+    "escalated":             false,
+    "severity":              0.72,
+    "detection_confidence":  0.61,
+    "is_persistent":         false,
+    "spread_rate":           0.12,
+    "affected_node_count":   1,
+    "packets_per_second":    4200,
+    "failed_auth_attempts":  0,
+    "outbound_data_bytes":   0,
+    "lateral_connection_count": 0,
+    "unusual_process_count": 0
+  }],
   "hidden_threat_count": 3,
   "scan_coverage":       0.4,
   "system_health":       85,
@@ -303,7 +333,10 @@ All endpoints return complete JSON. The server never crashes — malformed input
 }
 ```
 
-> Note: `visible_threats[].type` is always `"unknown"` until the agent scans the node. Threat classification must be inferred from IOC signals.
+> `visible_threats` contains **only behavioral IOC signals** — no type label, no MITRE
+> technique name. The agent must infer the attack class (and therefore the correct mitigation)
+> from the combination of `packets_per_second`, `failed_auth_attempts`, `outbound_data_bytes`,
+> `lateral_connection_count`, and `unusual_process_count`.
 
 ---
 

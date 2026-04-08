@@ -150,7 +150,7 @@ class AdaptiveAttacker:
             "spread_rate":            3.0,   # spreads aggressively
         },
         "INSIDER_THREAT": {
-            "initial_attack_type":    "ACCESS",   # starts already inside
+            "initial_attack_type":    "lateral_movement",   # insider uses valid creds — starts as lateral movement
             "dwell_time_multiplier":  1.5,
             "detection_evasion":      0.7,         # hard to detect (legit creds)
             "spread_rate":            0.8,
