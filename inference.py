@@ -394,7 +394,7 @@ def run_task(task_name: str) -> dict:
         sys.stdout.flush()
         return {
             "task_id": task_name, "steps": 0,
-            "total_reward": 0.0, "score": safe_score(0.0), "status": "timeout",
+            "total_reward": 0.0, "score": 0.001, "status": "timeout",
         }
     except Exception as e:
         print(f"[error] /reset failed for task '{task_name}': {e}")
@@ -402,7 +402,7 @@ def run_task(task_name: str) -> dict:
         sys.stdout.flush()
         return {
             "task_id": task_name, "steps": 0,
-            "total_reward": 0.0, "score": safe_score(0.0), "status": "reset_failed",
+            "total_reward": 0.0, "score": 0.001, "status": "reset_failed",
         }
 
     session_id = reset_data.get("session_id", "")
@@ -513,22 +513,19 @@ def run_task(task_name: str) -> dict:
         score = _compute_grader_formula(
             containment_rate, critical_health, avg_resource_left, speed_bonus
         )
+
+        # Also clamp the server-side grader_score from episode_info if present
+        server_score = episode_info.get("grader_score")
+        if server_score is not None:
+            server_score = max(0.001, min(0.999, float(server_score)))
     except Exception:
         pass
 
-    # Guarantee strict open interval (0, 1) — grader returns 0.0001 minimum
-    # but round(0.0001, 3) would strip it back to 0.0, so we apply safe_score
-    # AFTER the formula and do NOT round to fewer than 4 decimal places.
-    score = safe_score(score)
+    # Clamp score to strictly (0, 1) exclusive
+    score = max(0.001, min(0.999, score))
 
-    # Validate — crash loudly here rather than silently pass bad scores upstream.
-    assert 0.0 < score < 1.0, f"score {score!r} out of strict (0, 1) range"
-
-    # Apply safe_score to per-step rewards before printing (rewards are already
-    # in [0,1] from server-side _clamp_reward; this catches any edge cases).
-    all_rewards = [safe_score(r) for r in all_rewards]
-    for r in all_rewards:
-        assert 0.0 < r < 1.0, f"reward {r!r} out of strict (0, 1) range"
+    # Clamp per-step rewards to strictly (0, 1) exclusive
+    all_rewards = [max(0.001, min(0.999, r)) for r in all_rewards]
 
     threshold   = TASK_THRESHOLDS.get(task_name, 0.50)
     rewards_str = ",".join(f"{r:.4f}" for r in all_rewards)
@@ -584,7 +581,7 @@ def run():
     scores = []
     for task_name, r in results:
         threshold = TASK_THRESHOLDS.get(task_name, 0.50)
-        score = safe_score(r.get("score", 0.0001))
+        score = max(0.001, min(0.999, float(r.get("score", 0.001))))
         label = "PASS ✓" if score >= threshold else "FAIL ✗"
         scores.append(score)
         print(
