@@ -26,7 +26,7 @@ for _p in (_HERE.parent, _HERE):
 
 from adaptive_cyber_defense.models.action import Action, ActionInput, ACTION_PROFILES
 from adaptive_cyber_defense.models.state  import EnvironmentState
-from adaptive_cyber_defense.tasks         import EasyTask, MediumTask, HardTask, NightmareTask, EliteTask, ImpossibleTask
+from adaptive_cyber_defense.tasks         import EasyTask, MediumTask, HardTask, NightmareTask, EliteTask
 
 _TASK_MAP = {
     "easy":       EasyTask,
@@ -34,7 +34,6 @@ _TASK_MAP = {
     "hard":       HardTask,
     "nightmare":  NightmareTask,
     "elite":      EliteTask,
-    "impossible": ImpossibleTask,
 }
 
 

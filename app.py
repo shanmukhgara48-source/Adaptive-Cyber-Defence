@@ -33,11 +33,11 @@ from tasks.medium import MediumTask
 from tasks.hard import HardTask
 from tasks.nightmare import NightmareTask
 from tasks.elite import EliteTask
-from tasks.impossible import ImpossibleTask
 from grader import (
     TASK_PASSING_SCORES,
     compute_speed_bonus as _compute_speed_bonus,
     compute_grader_score as _grader_formula,
+    safe_score,
 )
 
 TASK_MAP = {
@@ -46,7 +46,6 @@ TASK_MAP = {
     "hard":       HardTask,
     "nightmare":  NightmareTask,
     "elite":      EliteTask,
-    "impossible": ImpossibleTask,
 }
 _aa_spec = _ilu.spec_from_file_location(
     "adaptive_attacker",
@@ -223,7 +222,7 @@ _FP_IOC_PROFILE: dict = {
 }
 
 
-_HARD_DIFFICULTIES = {"hard", "nightmare", "elite", "impossible"}
+_HARD_DIFFICULTIES = {"hard", "nightmare", "elite"}
 
 
 def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
@@ -340,7 +339,6 @@ TASKS = [
     {"id": "hard",       "name": "Hard Defense",      "difficulty": "hard",       "passing_score": TASK_PASSING_SCORES["hard"],       "max_steps": 30,  "description": "APT across 5 nodes. Low detection, scarce resources, fast progression."},
     {"id": "nightmare",  "name": "Nightmare Defense", "difficulty": "nightmare",  "passing_score": TASK_PASSING_SCORES["nightmare"],  "max_steps": 15,  "description": "Nation-state APT. Near-zero detection, 15 steps. Designed to challenge frontier LLMs."},
     {"id": "elite",      "name": "Elite Defense",     "difficulty": "elite",      "passing_score": TASK_PASSING_SCORES["elite"],      "max_steps": 15,  "description": "Persistent threat with insider access. All nodes pre-compromised. Kill chain advances every step."},
-    {"id": "impossible", "name": "Impossible Defense","difficulty": "impossible", "passing_score": TASK_PASSING_SCORES["impossible"], "max_steps": 10,  "description": "AI-driven attacker with perfect counter-strategy. Ceiling benchmark — no passing threshold."},
 ]
 
 
@@ -363,8 +361,8 @@ def _derive_task_overrides() -> dict:
             "natural_severity_growth":   cfg.natural_severity_growth,
             "false_positive_rate":       cfg.false_positive_rate,
             "passing_score":             cfg.passing_score,
-            # Visibility threshold: nightmare/elite/impossible use 8 (longer hidden window)
-            "age_visibility_threshold":  8 if name in ("nightmare", "elite", "impossible") else 5,
+            # Visibility threshold: nightmare/elite use 8 (longer hidden window)
+            "age_visibility_threshold":  8 if name in ("nightmare", "elite") else 5,
         }
     return out
 
@@ -545,7 +543,7 @@ def _fresh_state(task_config: dict, rng: random.Random, attacker=None,
         "threats": _make_threats_fixed(task_config, rng, attacker, task_name=task_name),
         "scanned_nodes": set(),
         "system_health": 100,
-        "score": 0.0,
+        "score": 0.0001,
         "step": 0,
         "done": False,
         "false_positives_seen": 0,
@@ -602,8 +600,8 @@ def _clamp_reward(r: float) -> float:
 
 def _clamp_score(sess: Session) -> None:
     if not math.isfinite(sess.state["score"]):
-        sess.state["score"] = 0.0
-    sess.state["score"] = max(0.0, min(1.0, sess.state["score"]))
+        sess.state["score"] = safe_score(0.0)
+    sess.state["score"] = safe_score(sess.state["score"])
 
 
 # ─── LOGIC ────────────────────────────────────────────────────────────────────
@@ -880,7 +878,7 @@ def _build_reason(action: str, matched: bool, threat_type: str | None, early: bo
 
 
 def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None):
-    score = obs.get("score", 0.0)
+    score = safe_score(obs.get("score", 0.0001))
     resp = {
         "action":           action,
         "reward":           round(float(reward), 3),
@@ -889,7 +887,7 @@ def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None
         "scan_coverage":    obs.get("scan_coverage", 0.0),
         "system_health":    obs.get("system_health", 100),
         "score":            score,
-        "grader_score":     obs.get("grader_score", score),
+        "grader_score":     safe_score(obs.get("grader_score", score)),
         "step":             obs.get("step", 0),
         "done":             obs.get("done", False),
         "reason":           reason,
@@ -908,7 +906,7 @@ def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None
 _EMPTY_OBS: dict = {
     "visible_threats": [], "hidden_threat_count": TOTAL_NODES,
     "scan_coverage": 0.0, "system_health": 100,
-    "score": 0.0, "grader_score": 0.0, "step": 0, "done": False,
+    "score": 0.0001, "grader_score": 0.0001, "step": 0, "done": False,
 }
 
 
@@ -1071,7 +1069,7 @@ def _get_state_impl(session_id: str | None):
         return JSONResponse(status_code=200, content={
             "visible_threats": [], "hidden_threat_count": TOTAL_NODES,
             "scan_coverage": 0.0, "system_health": 100,
-            "score": 0.0, "grader_score": 0.0, "step": 0, "done": False,
+            "score": 0.0001, "grader_score": 0.0001, "step": 0, "done": False,
             "error": "session_id required. Call /reset first.",
         })
     try:
@@ -1081,7 +1079,7 @@ def _get_state_impl(session_id: str | None):
         return JSONResponse(status_code=200, content={
             "visible_threats": [], "hidden_threat_count": 0,
             "scan_coverage": 0.0, "system_health": sess.state.get("system_health", 100),
-            "score": 0.0, "grader_score": 0.0,
+            "score": 0.0001, "grader_score": 0.0001,
             "step": sess.state.get("step", 0), "done": sess.state.get("done", False),
         })
 
@@ -1098,7 +1096,7 @@ def step(req: StepRequest):
             content={
                 "action": "", "reward": 0.0, "reason": "No active session. Call /reset first.",
                 "confidence": 0.0, "done": False, "error": "no_active_session",
-                "score": 0.0, "grader_score": 0.0, "step": 0,
+                "score": 0.0001, "grader_score": 0.0001, "step": 0,
                 "visible_threats": [], "hidden_threat_count": 5, "scan_coverage": 0.0, "system_health": 100,
             }
         )
@@ -1128,7 +1126,7 @@ def step(req: StepRequest):
             _update_visibility(sess)
             _clamp_health(sess)
             _all_r = sess.episode_rewards + [reward]
-            s["score"] = round(sum(_all_r) / len(_all_r), 4)
+            s["score"] = safe_score(round(sum(_all_r) / len(_all_r), 4))
             s["step"] += 1
             if s["system_health"] <= 0 or s["step"] >= sess.task_config.get("max_steps", 50):
                 s["done"] = True
@@ -1288,9 +1286,9 @@ def step(req: StepRequest):
         else:
             reward = _clamp_reward(-0.5)
 
-        # Running average score — never saturates (each reward ∈ [0,1], mean ∈ [0,1])
+        # Running average score — clamped to strict (0, 1) via safe_score
         _all_rewards = sess.episode_rewards + [reward]
-        s["score"] = round(sum(_all_rewards) / len(_all_rewards), 4)
+        s["score"] = safe_score(round(sum(_all_rewards) / len(_all_rewards), 4))
         s["step"] += 1
 
         if s["system_health"] <= 0 or s["step"] >= sess.task_config.get("max_steps", 50):

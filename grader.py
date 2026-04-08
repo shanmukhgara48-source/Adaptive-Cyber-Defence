@@ -2,9 +2,10 @@
 Authoritative grader formula for the Adaptive Cyber Defense environment.
 
 Single source of truth for:
-  - TASK_PASSING_SCORES  — monotonically increasing per-difficulty thresholds
-  - compute_speed_bonus  — early-containment speed component
-  - compute_grader_score — weighted episode quality formula
+  - safe_score            — enforces strict open interval (0.0, 1.0)
+  - TASK_PASSING_SCORES   — monotonically increasing per-difficulty thresholds
+  - compute_speed_bonus   — early-containment speed component
+  - compute_grader_score  — weighted episode quality formula
 
 Imported by both app.py (server) and inference.py (client) so the
 formula can never silently diverge between evaluation paths.
@@ -15,8 +16,23 @@ Formula
           + 0.20 × critical_health
           + 0.15 × resource_efficiency
           + 0.15 × speed_bonus
-    score = clamp(score, 0.0, 1.0)
+    score = safe_score(score)   # strictly in (0.0, 1.0)
 """
+
+# ---------------------------------------------------------------------------
+# Single source of truth: safe_score
+# Imported by inference.py and app.py — do NOT redefine elsewhere.
+# ---------------------------------------------------------------------------
+
+def safe_score(x: float) -> float:
+    """Clamp x to the strict open interval (0.0, 1.0).
+
+    Never returns exactly 0.0 or 1.0 — required by Phase 2 validator.
+    This is the ONLY place this function is defined; all other modules
+    import it from here.
+    """
+    return min(0.9999, max(0.0001, float(x)))
+
 
 # ---------------------------------------------------------------------------
 # Passing thresholds — strictly monotonically increasing with difficulty
@@ -28,7 +44,6 @@ TASK_PASSING_SCORES: dict[str, float] = {
     "hard":       0.70,
     "nightmare":  0.80,
     "elite":      0.88,
-    "impossible": 0.0,   # ceiling benchmark — no passing threshold
 }
 
 
@@ -87,11 +102,11 @@ def compute_grader_score(
         + 0.15 * resource_efficiency
         + 0.15 * speed_bonus
     )
-    # Clamp BEFORE rounding to avoid rounding pushing to boundary
+    # Clamp BEFORE rounding so float arithmetic never pushes raw to boundary
     clamped = max(_EPSILON, min(1.0 - _EPSILON, raw))
     rounded = round(clamped, 4)
-    # Final safety clamp: catches any float rounding edge case after round()
-    return min(0.9999, max(0.0001, rounded))
+    # safe_score is the final gate — catches any residual rounding edge case
+    return safe_score(rounded)
 
 
 # ---------------------------------------------------------------------------

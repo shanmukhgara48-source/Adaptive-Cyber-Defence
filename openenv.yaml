@@ -47,12 +47,6 @@ tasks:
     difficulty: elite
     passing_score: 0.88
     max_steps: 15
-  - id: impossible
-    name: Impossible Defense
-    description: "AI-driven attacker with perfect counter-strategy. Maximum evasion, instant kill chain, zero resources. This task has no passing threshold — it exists as a ceiling benchmark to measure how close frontier models can get to perfect defense under adversarial conditions. Any score above 0.0 is meaningful."
-    difficulty: impossible
-    passing_score: 0.0
-    max_steps: 10
 
 observation:
   type: dict
@@ -191,7 +185,7 @@ reward:
 termination:
   conditions:
     - system_health <= 0
-    - step >= max_steps  # per-task: easy=30, medium=50, hard=30, nightmare=15, elite=15, impossible=10
+    - step >= max_steps  # per-task: easy=30, medium=50, hard=30, nightmare=15, elite=15
 
 network:
   nodes: 5

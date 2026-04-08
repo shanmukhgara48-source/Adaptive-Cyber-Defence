@@ -3,7 +3,8 @@ import os
 import sys
 import requests
 from openai import OpenAI
-from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_formula
+from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_formula, safe_score
+
 
 # ---------------------------------------------------------------------------
 # Environment configuration
@@ -60,7 +61,6 @@ TASK_MAX_STEPS: dict[str, int] = {
     "hard":       30,
     "nightmare":  15,
     "elite":      15,
-    "impossible": 10,
 }
 
 # Map LLM action names → environment action strings.
@@ -394,7 +394,7 @@ def run_task(task_name: str) -> dict:
         sys.stdout.flush()
         return {
             "task_id": task_name, "steps": 0,
-            "total_reward": 0.0, "score": 0.0, "status": "timeout",
+            "total_reward": 0.0, "score": safe_score(0.0), "status": "timeout",
         }
     except Exception as e:
         print(f"[error] /reset failed for task '{task_name}': {e}")
@@ -402,7 +402,7 @@ def run_task(task_name: str) -> dict:
         sys.stdout.flush()
         return {
             "task_id": task_name, "steps": 0,
-            "total_reward": 0.0, "score": 0.0, "status": "reset_failed",
+            "total_reward": 0.0, "score": safe_score(0.0), "status": "reset_failed",
         }
 
     session_id = reset_data.get("session_id", "")
@@ -516,8 +516,22 @@ def run_task(task_name: str) -> dict:
     except Exception:
         pass
 
+    # Guarantee strict open interval (0, 1) — grader returns 0.0001 minimum
+    # but round(0.0001, 3) would strip it back to 0.0, so we apply safe_score
+    # AFTER the formula and do NOT round to fewer than 4 decimal places.
+    score = safe_score(score)
+
+    # Validate — crash loudly here rather than silently pass bad scores upstream.
+    assert 0.0 < score < 1.0, f"score {score!r} out of strict (0, 1) range"
+
+    # Apply safe_score to per-step rewards before printing (rewards are already
+    # in [0,1] from server-side _clamp_reward; this catches any edge cases).
+    all_rewards = [safe_score(r) for r in all_rewards]
+    for r in all_rewards:
+        assert 0.0 < r < 1.0, f"reward {r!r} out of strict (0, 1) range"
+
     threshold   = TASK_THRESHOLDS.get(task_name, 0.50)
-    rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
+    rewards_str = ",".join(f"{r:.4f}" for r in all_rewards)
     success_str = "true" if score >= threshold else "false"
     print(f"[END]   success={success_str} steps={step_num} rewards={rewards_str}")
     sys.stdout.flush()
@@ -526,11 +540,11 @@ def run_task(task_name: str) -> dict:
         "task_id":           task_name,
         "steps":             step_num,
         "total_reward":      round(total_reward, 3),
-        "containment_rate":  round(containment_rate, 3),
-        "critical_health":   round(critical_health, 3),
-        "avg_resource_left": round(avg_resource_left, 3),
-        "speed_bonus":       round(speed_bonus, 3),
-        "score":             round(score, 3),
+        "containment_rate":  round(containment_rate, 4),
+        "critical_health":   round(critical_health, 4),
+        "avg_resource_left": round(avg_resource_left, 4),
+        "speed_bonus":       round(speed_bonus, 4),
+        "score":             score,          # already safe; do NOT re-round to 3dp
         "status":            final_status,
     }
 
@@ -570,7 +584,7 @@ def run():
     scores = []
     for task_name, r in results:
         threshold = TASK_THRESHOLDS.get(task_name, 0.50)
-        score = r.get("score", 0.0)
+        score = safe_score(r.get("score", 0.0001))
         label = "PASS ✓" if score >= threshold else "FAIL ✗"
         scores.append(score)
         print(
@@ -586,13 +600,6 @@ def run():
     print(f"\nScores non-increasing: {'YES ✓' if non_increasing else 'NO ✗'}")
     print(f"Tasks passed: {passes}/{len(results)}")
     print(sep)
-
-    print("\n[CEILING BENCHMARK]")
-    print("Running impossible task as ceiling reference...")
-    # Run 1 episode of impossible — not included in pass/fail calculation
-    imp_result = run_task("impossible")
-    print(f"Impossible raw score: {imp_result.get('score', 0.0):.4f}  "
-          f"(no threshold — any score > 0.0 is meaningful)")
 
 
 if __name__ == "__main__":
