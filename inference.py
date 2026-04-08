@@ -13,8 +13,10 @@ from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_
 BASE_URL     = os.getenv("BASE_URL", "http://localhost:8000")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
-HF_TOKEN     = os.getenv("HF_TOKEN")
-API_KEY      = os.getenv("OPENAI_API_KEY") or HF_TOKEN or os.getenv("API_KEY")
+API_KEY      = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+
+if API_KEY is None:
+    raise ValueError("API_KEY (or HF_TOKEN) must be set")
 
 # Print LLM reasoning every step so judges can watch the agent think.
 # Set VERBOSE=false to suppress.
@@ -29,7 +31,7 @@ def _check_env_vars() -> bool:
     if not MODEL_NAME:
         missing.append("MODEL_NAME")
     if not API_KEY:
-        missing.append("HF_TOKEN / OPENAI_API_KEY / API_KEY")
+        missing.append("API_KEY (or HF_TOKEN fallback)")
     if missing:
         print("ERROR: Missing required environment variable(s):")
         for m in missing:
@@ -38,7 +40,7 @@ def _check_env_vars() -> bool:
             "\nUsage:\n"
             "  export API_BASE_URL=<openai-compatible-endpoint>\n"
             "  export MODEL_NAME=<model-id>\n"
-            "  export HF_TOKEN=<api-key>   # or OPENAI_API_KEY / API_KEY\n"
+            "  export API_KEY=<api-key>   # or HF_TOKEN\n"
             "  python inference.py"
         )
         return False
@@ -54,8 +56,8 @@ def _get_client() -> OpenAI:
     global _client
     if _client is None:
         _client = OpenAI(
-            api_key=HF_TOKEN or API_KEY,
             base_url=API_BASE_URL,
+            api_key=API_KEY,
         )
     return _client
 
@@ -390,7 +392,7 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
             err_str = str(e)
             if "403" in err_str or "401" in err_str:
                 print(f"ERROR: LLM authentication failed (HTTP {401 if '401' in err_str else 403}). "
-                      f"Check HF_TOKEN / OPENAI_API_KEY / API_KEY and API_BASE_URL.")
+                      f"Check API_KEY / HF_TOKEN and API_BASE_URL.")
                 return "ignore", ""   # signals caller to abort cleanly via done
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
