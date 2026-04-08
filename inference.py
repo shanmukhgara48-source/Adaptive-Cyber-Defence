@@ -10,9 +10,10 @@ from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_
 # ---------------------------------------------------------------------------
 
 BASE_URL     = os.getenv("BASE_URL", "http://localhost:8000")
-API_BASE_URL = os.getenv("API_BASE_URL")
-MODEL_NAME   = os.getenv("MODEL_NAME")
-API_KEY      = os.getenv("OPENAI_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.openai.com/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "gpt-4.1-mini")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+API_KEY      = os.getenv("OPENAI_API_KEY") or HF_TOKEN or os.getenv("API_KEY")
 
 # Print LLM reasoning every step so judges can watch the agent think.
 # Set VERBOSE=false to suppress.
@@ -52,7 +53,7 @@ def _get_client() -> OpenAI:
     global _client
     if _client is None:
         _client = OpenAI(
-            api_key=API_KEY,
+            api_key=HF_TOKEN or API_KEY,
             base_url=API_BASE_URL,
         )
     return _client
@@ -423,6 +424,9 @@ def run_task(task_name: str) -> dict:
     print(f"{'Step':<6} {'Env Action':<22} {'Reward':<8} {'Env Reason'}")
     print("-" * 70)
 
+    all_rewards: list[float] = []
+    print(f"[START] task={task_name} env=adaptive-cyber-defense model={MODEL_NAME}")
+
     max_steps = TASK_MAX_STEPS.get(task_name, 30)
     for step_num in range(1, max_steps + 1):
         try:
@@ -472,12 +476,15 @@ def run_task(task_name: str) -> dict:
         last_reward   = data.get("reward", 0.0)
         last_action   = action
         total_reward += last_reward
+        all_rewards.append(last_reward)
         reason        = data.get("reason", "")
         step_label    = data.get("step", step_num)
+        done_flag     = data.get("done", False)
 
         print(f"{step_label:<6} {action:<22} {last_reward:<8.3f} {reason[:55]}")
+        print(f"[STEP]  step={step_num} action={action} reward={last_reward:.2f} done={str(done_flag).lower()} error=null")
 
-        if data.get("done"):
+        if done_flag:
             final_status = "done"
             break
     else:
@@ -514,6 +521,11 @@ def run_task(task_name: str) -> dict:
         speed_bonus = 0.0
 
     score = _compute_grader_formula(containment_rate, critical_health, avg_resource_left, speed_bonus)
+
+    threshold   = TASK_THRESHOLDS.get(task_name, 0.50)
+    rewards_str = ",".join(f"{r:.2f}" for r in all_rewards)
+    success_str = "true" if score >= threshold else "false"
+    print(f"[END]   success={success_str} steps={step_num} rewards={rewards_str}")
 
     return {
         "task_id":           task_name,
