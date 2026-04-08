@@ -469,7 +469,7 @@ def run_task(task_name: str) -> dict:
             final_status = "error"
             break
 
-        last_reward   = data.get("reward", 0.0)
+        last_reward   = max(0.001, min(0.999, float(data.get("reward", 0.001))))
         last_action   = action
         total_reward += last_reward
         all_rewards.append(last_reward)

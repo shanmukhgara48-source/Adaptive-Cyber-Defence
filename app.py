@@ -877,11 +877,11 @@ def _build_reason(action: str, matched: bool, threat_type: str | None, early: bo
         return ("Action did not contain the threat. Review behavioral signals.", 0.35)
 
 
-def safe_response(obs, action, reward=0.0, reason="", confidence=0.0, error=None):
+def safe_response(obs, action, reward=0.001, reason="", confidence=0.0, error=None):
     score = safe_score(obs.get("score", 0.0001))
     resp = {
         "action":           action,
-        "reward":           round(float(reward), 3),
+        "reward":           max(0.001, min(0.999, round(float(reward), 3))),
         "visible_threats":  obs.get("visible_threats", []),
         "hidden_threat_count": obs.get("hidden_threat_count", TOTAL_NODES),
         "scan_coverage":    obs.get("scan_coverage", 0.0),
@@ -916,7 +916,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         log.debug(f"Validation error: {exc.errors()}")
     return JSONResponse(
         status_code=200,
-        content=safe_response(_EMPTY_OBS, action="", reward=0.0,
+        content=safe_response(_EMPTY_OBS, action="", reward=0.001,
                                reason="Invalid input received. Action rejected.",
                                confidence=0.0, error="invalid action"),
     )
@@ -927,7 +927,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
     log.error(f"Unhandled exception: {exc}", exc_info=True)
     return JSONResponse(
         status_code=200,
-        content=safe_response(_EMPTY_OBS, action="", reward=0.0,
+        content=safe_response(_EMPTY_OBS, action="", reward=0.001,
                                reason="Internal error. State preserved.",
                                confidence=0.0, error="internal error"),
     )
@@ -1094,7 +1094,7 @@ def step(req: StepRequest):
         return JSONResponse(
             status_code=200,
             content={
-                "action": "", "reward": 0.0, "reason": "No active session. Call /reset first.",
+                "action": "", "reward": 0.001, "reason": "No active session. Call /reset first.",
                 "confidence": 0.0, "done": False, "error": "no_active_session",
                 "score": 0.0001, "grader_score": 0.0001, "step": 0,
                 "visible_threats": [], "hidden_threat_count": 5, "scan_coverage": 0.0, "system_health": 100,
@@ -1109,7 +1109,7 @@ def step(req: StepRequest):
             if DEBUG:
                 log.debug("step() called after done=True")
             return safe_response(
-                _obs(sess), action="", reward=0.0,
+                _obs(sess), action="", reward=0.001,
                 reason="Episode is over. Call /reset to start a new episode.",
                 confidence=1.0, error="Episode over — call /reset",
             )
@@ -1355,7 +1355,7 @@ def step(req: StepRequest):
             error_msg = f"reward_error: {str(e)[:64]}"
         else:
             error_msg = "internal_error"
-        return safe_response(obs, action="", reward=0.0,
+        return safe_response(obs, action="", reward=0.001,
                              reason=f"Step failed: {error_msg}. State preserved.",
                              confidence=0.0, error=error_msg)
 
