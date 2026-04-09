@@ -18,6 +18,11 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 VERBOSE = os.getenv("VERBOSE", "true").lower() != "false"
 
 
+def _clamp_end_score(x: float) -> float:
+    """Clamp score to strictly (0,1) for [END] output — never 0.0 or 1.0."""
+    return max(0.01, min(0.99, float(x)))
+
+
 def _get_client() -> OpenAI:
     """Always create a fresh OpenAI client using strictly injected env vars.
 
@@ -381,8 +386,7 @@ def run_task(task_name: str) -> dict:
     print(sep)
 
     all_rewards: list[float] = []
-    print(f"[START] task={task_name} env=adaptive-cyber-defense model={MODEL_NAME}")
-    sys.stdout.flush()
+    print(f"[START] task={task_name} env=adaptive-cyber-defense model={MODEL_NAME}", flush=True)
 
     try:
         reset_data = requests.post(
@@ -390,19 +394,19 @@ def run_task(task_name: str) -> dict:
         ).json()
     except requests.exceptions.Timeout:
         print(f"[TIMEOUT] /reset timed out after {TIMEOUT}s for task '{task_name}'")
-        print(f"[END]   success=false steps=0 rewards=")
-        sys.stdout.flush()
+        _es = _clamp_end_score(0.01)
+        print(f"[END] task={task_name} score={_es:.4f} steps=0", flush=True)
         return {
             "task_id": task_name, "steps": 0,
-            "total_reward": 0.0, "score": 0.001, "status": "timeout",
+            "total_reward": 0.0, "score": _es, "status": "timeout",
         }
     except Exception as e:
         print(f"[error] /reset failed for task '{task_name}': {e}")
-        print(f"[END]   success=false steps=0 rewards=")
-        sys.stdout.flush()
+        _es = _clamp_end_score(0.01)
+        print(f"[END] task={task_name} score={_es:.4f} steps=0", flush=True)
         return {
             "task_id": task_name, "steps": 0,
-            "total_reward": 0.0, "score": 0.001, "status": "reset_failed",
+            "total_reward": 0.0, "score": _es, "status": "reset_failed",
         }
 
     session_id = reset_data.get("session_id", "")
@@ -478,8 +482,7 @@ def run_task(task_name: str) -> dict:
         done_flag     = data.get("done", False)
 
         print(f"{step_label:<6} {action:<22} {last_reward:<8.3f} {reason[:55]}")
-        print(f"[STEP]  step={step_num} action={action} reward={last_reward:.2f} done={str(done_flag).lower()} error=null")
-        sys.stdout.flush()
+        print(f"[STEP] step={step_num} action={action} reward={last_reward:.2f} done={str(done_flag).lower()} error=null", flush=True)
 
         if done_flag:
             final_status = "done"
@@ -521,17 +524,15 @@ def run_task(task_name: str) -> dict:
     except Exception:
         pass
 
-    # Clamp score to strictly (0, 1) exclusive
-    score = max(0.001, min(0.999, score))
+    # Clamp score to strictly (0.01, 0.99)
+    score = max(0.01, min(0.99, score))
 
-    # Clamp per-step rewards to strictly (0, 1) exclusive
-    all_rewards = [max(0.001, min(0.999, r)) for r in all_rewards]
+    # Clamp per-step rewards to strictly (0.01, 0.99)
+    all_rewards = [max(0.01, min(0.99, r)) for r in all_rewards]
 
     threshold   = TASK_THRESHOLDS.get(task_name, 0.50)
-    rewards_str = ",".join(f"{r:.4f}" for r in all_rewards)
-    success_str = "true" if score >= threshold else "false"
-    print(f"[END]   success={success_str} steps={step_num} rewards={rewards_str}")
-    sys.stdout.flush()
+    final_score = _clamp_end_score(score)
+    print(f"[END] task={task_name} score={final_score:.4f} steps={step_num}", flush=True)
 
     return {
         "task_id":           task_name,
