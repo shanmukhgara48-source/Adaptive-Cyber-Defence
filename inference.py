@@ -56,8 +56,6 @@ TIMEOUT = 30  # seconds — judge evaluation timeout
 VALID_ACTIONS = [
     "block_ip", "isolate_machine", "patch", "ignore",
     *[f"scan_node_{i}" for i in range(1, 6)],
-    *[f"verify_node_{i}" for i in range(1, 6)],
-    *[f"monitor_node_{i}" for i in range(1, 6)],
 ]
 
 # max_tokens must fit: {"action":"PATCH_VULNERABILITY","target":"node_5","reasoning":"...~80 chars..."}
@@ -92,7 +90,7 @@ ACTION_MAP: dict[str, str] = {
     "PATCH_VULNERABILITY": "patch",
     "DO_NOTHING":          "ignore",
     "IGNORE":              "ignore",
-    # SCAN, VERIFY, MONITOR handled separately — require the target node field
+    # SCAN is handled separately — requires the target node field
 }
 
 # ---------------------------------------------------------------------------
@@ -107,10 +105,8 @@ kind of attack is occurring, then choose the single best defensive action.
 Available actions:
   ISOLATE_MACHINE — network isolation of a compromised node
   BLOCK_IP        — block a source IP address
-  PATCH           — apply a security patch to a node (2-step delay)
-  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats (+0.25 if real, -0.10 if clean)
-  VERIFY_NODE_1 through VERIFY_NODE_5 — confirm a visible threat before acting (+0.15 reward)
-  MONITOR_NODE_1 through MONITOR_NODE_5 — reduce resurface risk post-containment (+0.10 reward)
+  PATCH           — apply a security patch to a node
+  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats
   DO_NOTHING      — take no action (heavy penalty)
 
 Your job is to reason from the IOC signals which action is most appropriate. \
@@ -222,18 +218,10 @@ def _map_to_env_action(action: str, target: str, scanned_nodes: set) -> str | No
     """Convert the LLM's (action, target) pair to a valid environment action string.
     Returns None if the mapping is impossible.
     """
-    if action.upper().startswith(("SCAN_NODE_", "VERIFY_NODE_", "MONITOR_NODE_")):
+    if action.upper().startswith("SCAN_NODE_"):
         candidate = action.lower()
         if candidate in VALID_ACTIONS:
             return candidate
-
-    if action in ("VERIFY", "MONITOR"):
-        prefix = "verify" if action == "VERIFY" else "monitor"
-        if target.startswith("node_"):
-            candidate = f"{prefix}_{target}"
-            if candidate in VALID_ACTIONS:
-                return candidate
-        return None
 
     if action == "SCAN":
         # Prefer the LLM's target node if it hasn't been scanned yet
@@ -416,25 +404,6 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
 
 
 # ---------------------------------------------------------------------------
-# Retry helper — final state fetch
-# ---------------------------------------------------------------------------
-
-def _safe_get_final_state(base_url: str, session_id: str) -> dict:
-    """Fetch /state with up to 3 retries.  Returns a minimal safe dict on total failure."""
-    for attempt in range(3):
-        try:
-            return requests.get(
-                f"{base_url}/state",
-                params={"session_id": session_id},
-                timeout=TIMEOUT,
-            ).json()
-        except Exception:
-            continue
-    # All attempts failed — return an empty-but-safe dict so callers don't crash
-    return {}
-
-
-# ---------------------------------------------------------------------------
 # Single-task interaction loop
 # ---------------------------------------------------------------------------
 
@@ -471,9 +440,7 @@ def run_task(task_name: str) -> dict:
 
     session_id = reset_data.get("session_id", "")
     if not session_id:
-        import uuid as _uuid
-        session_id = str(_uuid.uuid4())   # prevent episode_store key collision on empty sid
-        print(f"[warn] /reset did not return session_id for task '{task_name}' — using fallback id")
+        print(f"[warn] /reset did not return session_id for task '{task_name}'")
 
     # Start recording this episode
     _episode_store.start_episode(session_id, task_name, reset_data.get("seed", 0))
@@ -576,7 +543,10 @@ def run_task(task_name: str) -> dict:
     score             = 0.0
 
     try:
-        final_state  = _safe_get_final_state(BASE_URL, session_id)
+        final_state  = requests.get(
+            f"{BASE_URL}/state",
+            params={"session_id": session_id}, timeout=TIMEOUT,
+        ).json()
         episode_info = final_state.get("episode_info", {})
 
         # Read all four components from the server's authoritative episode_info.
@@ -628,61 +598,6 @@ def run_task(task_name: str) -> dict:
         "score":             score,          # already safe; do NOT re-round to 3dp
         "status":            final_status,
     }
-
-
-# ---------------------------------------------------------------------------
-# Elite variance stabilization — run two episodes and average the score
-# ---------------------------------------------------------------------------
-
-def _run_elite_averaged() -> dict:
-    """Run the 'elite' task twice (seed N and seed N+1) and return an averaged result.
-
-    This reduces score variance caused by unlucky random threat spawns.
-    The underlying environment and scoring formula are untouched — only the
-    reported score is the mean of two independent runs.
-    """
-    import random as _rand
-    base_seed = _rand.randint(0, 2**30)
-
-    print("\n[ELITE] Running episode 1/2 for variance stabilization...")
-    # Patch the reset call to inject a deterministic seed for episode 1
-    _orig_post = requests.post
-
-    def _seeded_post_1(url, **kwargs):
-        if url.endswith("/reset"):
-            body = dict(kwargs.get("json", {}))
-            body["seed"] = base_seed
-            kwargs["json"] = body
-        return _orig_post(url, **kwargs)
-
-    requests.post = _seeded_post_1
-    result1 = run_task("elite")
-    requests.post = _orig_post
-
-    print("\n[ELITE] Running episode 2/2 for variance stabilization...")
-
-    def _seeded_post_2(url, **kwargs):
-        if url.endswith("/reset"):
-            body = dict(kwargs.get("json", {}))
-            body["seed"] = base_seed + 1
-            kwargs["json"] = body
-        return _orig_post(url, **kwargs)
-
-    requests.post = _seeded_post_2
-    result2 = run_task("elite")
-    requests.post = _orig_post
-
-    score1 = result1.get("score", 0.01)
-    score2 = result2.get("score", 0.01)
-    avg_score = _clamp_end_score((score1 + score2) / 2.0)
-
-    print(f"\n[ELITE] Episode 1 score={score1:.4f}  Episode 2 score={score2:.4f}  → averaged={avg_score:.4f}")
-
-    # Return the better-populated result dict with the averaged score
-    merged = dict(result1)
-    merged["score"] = avg_score
-    merged["status"] = result2.get("status", result1.get("status", "done"))
-    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -757,11 +672,7 @@ def run():
 
     results = []
     for task_name in TASKS:
-        # Elite uses two-episode averaging to reduce score variance
-        if task_name == "elite":
-            result = _run_elite_averaged()
-        else:
-            result = run_task(task_name)
+        result = run_task(task_name)
         results.append((task_name, result))
 
     sep  = "=" * 80
