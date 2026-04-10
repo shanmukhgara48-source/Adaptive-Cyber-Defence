@@ -147,6 +147,9 @@ def get_enriched_observation(base_url: str, obs: dict, session_id: str = "") -> 
     enriched.setdefault("containment_rate",    0.0)
     enriched.setdefault("resources_remaining", 0.5)
     enriched.setdefault("attacker_strategy",   "UNKNOWN")
+    # Explainability fields — filled after LLM decision, never affect scoring
+    enriched.setdefault("decision_explanation", "")
+    enriched.setdefault("confidence_score",     0.0)
 
     params = {"session_id": session_id} if session_id else {}
     try:
@@ -270,6 +273,7 @@ def choose_action(
     scanned_nodes: set,
     base_url: str,
     session_id: str = "",
+    memory: dict | None = None,
 ) -> str:
     """Always call the LLM to choose an action.
     The only non-LLM path is the error fallback (API timeout / parse failure).
@@ -312,6 +316,17 @@ def choose_action(
     else:
         threats_block = "  (no visible threats — hidden threats may exist on unscanned nodes)"
 
+    if VERBOSE:
+        print(f"  [INFO] Threats: {len(threats)} visible | hidden={hidden_count} | risk={risk_level} | health={system_health}")
+
+    # ── Build memory context block ────────────────────────────────────────────
+    if memory and memory.get("previous_actions"):
+        recent = memory["previous_actions"][-3:]
+        mem_lines = [f"  Step {s}: {a} → reward {r:+.3f}" for s, a, r in recent]
+        memory_block = "RECENT ACTION HISTORY (last 3 steps):\n" + "\n".join(mem_lines) + "\n\n"
+    else:
+        memory_block = ""
+
     user_prompt = f"""STEP {step_num} — LIVE NETWORK STATUS
   Health: {system_health}/100  |  Risk: {risk_level}  |  Grade: {grade}
   Scan coverage: {coverage:.0%}  |  Hidden threats: {hidden_count}
@@ -324,7 +339,7 @@ def choose_action(
 ACTIVE ALERTS — behavioral IOCs (no type labels):
 {threats_block}
 
-TASK: Analyse the IOC profiles above, identify the most dangerous threat, and respond \
+{memory_block}TASK: Analyse the IOC profiles above, identify the most dangerous threat, and respond \
 with the single best defensive action as JSON.
 Remember: DO_NOTHING costs -10 health and -1.5 reward. Wrong mitigation costs -0.5. \
 Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
@@ -364,14 +379,17 @@ Correct mitigation earns +1.0 (age<3 earns +1.1 speed bonus).
         if VERBOSE:
             print(f"  [llm] {action_name}({target}) → {env_action}")
             print(f"  [reasoning] {reasoning}")
+            # Confidence proxy: mean detection_confidence of visible threats
+            conf = (sum(t.get("detection_confidence", 0.5) for t in threats) / len(threats)) if threats else 0.5
+            print(f"  [INFO] Action chosen: {env_action} | confidence≈{conf:.2f} | explanation: {reasoning[:60]}")
 
-        return env_action, target
+        return env_action, target, reasoning
 
     # ── All retries exhausted — scan highest-severity node ────────────────────
     fallback = _fallback_action(threats, scanned_nodes)
     if VERBOSE:
         print(f"  [llm] retries exhausted — fallback scan: {fallback}")
-    return fallback, ""
+    return fallback, "", "fallback: LLM retries exhausted"
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +413,7 @@ def run_task(task_name: str) -> dict:
     except requests.exceptions.Timeout:
         print(f"[TIMEOUT] /reset timed out after {TIMEOUT}s for task '{task_name}'")
         _es = _clamp_end_score(0.01)
-        print(f"[END] task={task_name} score={_es:.4f} steps=0", flush=True)
+        print(f"[END] task={task_name} score={_es:.2f} steps=0", flush=True)
         return {
             "task_id": task_name, "steps": 0,
             "total_reward": 0.0, "score": _es, "status": "timeout",
@@ -403,7 +421,7 @@ def run_task(task_name: str) -> dict:
     except Exception as e:
         print(f"[error] /reset failed for task '{task_name}': {e}")
         _es = _clamp_end_score(0.01)
-        print(f"[END] task={task_name} score={_es:.4f} steps=0", flush=True)
+        print(f"[END] task={task_name} score={_es:.2f} steps=0", flush=True)
         return {
             "task_id": task_name, "steps": 0,
             "total_reward": 0.0, "score": _es, "status": "reset_failed",
@@ -419,6 +437,8 @@ def run_task(task_name: str) -> dict:
     last_reward     = 0.0
     scanned_nodes: set = set()
     step_num        = 0
+    # Light per-episode memory — resets each episode, never persisted
+    memory: dict = {"previous_actions": [], "observed_patterns": []}
 
     print(f"{'Step':<6} {'Env Action':<22} {'Reward':<8} {'Env Reason'}")
     print("-" * 70)
@@ -446,9 +466,9 @@ def run_task(task_name: str) -> dict:
         if VERBOSE:
             print(f"\nStep {step_num}:")
 
-        action, target_node = choose_action(
+        action, target_node, last_reasoning = choose_action(
             obs, step_num, last_action, last_reward,
-            scanned_nodes, BASE_URL, session_id,
+            scanned_nodes, BASE_URL, session_id, memory,
         )
 
         if action.startswith("scan_node_"):
@@ -477,6 +497,10 @@ def run_task(task_name: str) -> dict:
         last_action   = action
         total_reward += last_reward
         all_rewards.append(last_reward)
+        # Update memory with this step's outcome (keep last 5 entries)
+        memory["previous_actions"].append((step_num, action, last_reward))
+        if len(memory["previous_actions"]) > 5:
+            memory["previous_actions"].pop(0)
         reason        = data.get("reason", "")
         step_label    = data.get("step", step_num)
         done_flag     = data.get("done", False)
@@ -532,7 +556,7 @@ def run_task(task_name: str) -> dict:
 
     threshold   = TASK_THRESHOLDS.get(task_name, 0.50)
     final_score = _clamp_end_score(score)
-    print(f"[END] task={task_name} score={final_score:.4f} steps={step_num}", flush=True)
+    print(f"[END] task={task_name} score={final_score:.2f} steps={step_num}", flush=True)
 
     return {
         "task_id":           task_name,

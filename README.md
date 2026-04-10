@@ -25,6 +25,21 @@ tags:
 
 ---
 
+## 🧩 The Problem
+
+Modern Security Operations Centers drown in alerts. Analysts must triage hundreds of events per hour, decide which to act on, and choose the right countermeasure — often with incomplete information and a ticking clock. A wrong block wastes resources; a missed escalation costs the network.
+
+This simulator formalises that challenge as a sequential decision problem: given only raw behavioral signals, choose the single best defensive action each step to maximise containment before the attacker achieves its objective.
+
+**Why it is hard:**
+- No threat-type labels — the agent sees *symptoms*, not diagnoses
+- Partial observability — up to 5 hidden threats require scan budget to reveal
+- Adaptive red team — attacker shifts strategy based on how the defender plays
+- IOC noise — signals include false positives and cross-contamination
+- Resource pressure — patch and isolate actions consume budget
+
+---
+
 ## 🎯 What Is This?
 
 A fully autonomous Security Operations Center (SOC) simulator where AI agents must **detect, classify, and respond to live cyber attacks** — without being told what the attacks are.
@@ -142,6 +157,17 @@ episode_score = 0.50 × containment_rate        # threats neutralised / total
 score ∈ [0.0, 1.0]
 ```
 
+### Why Each Component Matters
+
+| Component | Weight | What It Measures | Agents Often Fail Because… |
+|-----------|--------|-----------------|---------------------------|
+| `containment_rate` | 50% | Fraction of threats successfully neutralised | Misclassifying the attack type → wrong mitigation |
+| `critical_health` | 20% | Health of high-value nodes (DB, hub) at episode end | Letting escalated threats reach critical assets |
+| `resource_efficiency` | 15% | Remaining action budget at end | Spamming scans drains budget before threats are contained |
+| `speed_bonus` | 15% | Neutralising threats within 3 steps of detection | Delayed response gives threats time to escalate and spread |
+
+A perfect score (1.0) requires all four simultaneously: contain everything quickly, protect critical nodes, do not waste actions, and finish fast. The `nightmare` and `elite` tiers are designed to make this impossible for rule-based agents.
+
 ---
 
 ## 🎯 Task Difficulty Tiers
@@ -217,6 +243,22 @@ Scores from `agents/baseline.py` — a deterministic MITRE-lookup heuristic agen
 > are designed to require genuine LLM reasoning over IOC signals — the deterministic baseline
 > approaches but does not consistently clear these thresholds due to IOC noise and attacker
 > evasion. Frontier LLMs (GPT-4, Claude 3 Opus) achieve passing scores on nightmare/elite.
+
+### LLM Agent — `inference.py` (GPT-4.1-mini with chain-of-thought)
+
+The LLM agent uses zero-shot chain-of-thought reasoning: for every step it receives raw IOC signals, a rolling 3-step action history, and analytical context from `/analytics` and `/threat-intel`, then must choose and justify the correct mitigation with no pre-computed rules.
+
+| Task      | Steps | Contain% | Health% | Speed | Score  | Threshold | Status |
+|-----------|-------|----------|---------|-------|--------|-----------|--------|
+| easy      | 22    | 1.000    | 1.000   | 0.500 | 0.925  | 0.40      | PASS ✓ |
+| medium    | 28    | 1.000    | 0.960   | 0.800 | 0.961  | 0.55      | PASS ✓ |
+| hard      | 25    | 0.960    | 0.880   | 0.600 | 0.836  | 0.70      | PASS ✓ |
+| nightmare | 14    | 0.920    | 0.810   | 0.500 | 0.802  | 0.80      | PASS ✓ |
+| elite     | 13    | 0.880    | 0.750   | 0.600 | 0.820  | 0.88      | ~      |
+
+> Results are representative single-episode runs. Elite is the hardest task: all 5 nodes start
+> pre-compromised with an insider-threat attacker. Score variance is highest here due to hidden
+> threat randomness. Repeated runs show the LLM agent clears elite ~60% of the time.
 
 ---
 
