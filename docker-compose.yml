@@ -2,6 +2,7 @@ services:
   soc-simulator:
     build: .
     ports:
+      - "7860:7860"
       - "8501:8501"
     volumes:
       # Persist trained Q-tables and score files between runs

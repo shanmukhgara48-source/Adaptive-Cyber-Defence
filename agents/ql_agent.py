@@ -65,6 +65,15 @@ def discretise(env_state: EnvironmentState) -> Tuple[str, str]:
     return (threat_level, resource_level)
 
 
+def extract_state(env_state: "EnvironmentState") -> tuple:
+    """
+    Alias for discretise().
+    Added for compatibility with training scripts (train_phase1/2/3.py) and run.py.
+    Does not change or replace discretise — both coexist.
+    """
+    return discretise(env_state)
+
+
 # ---------------------------------------------------------------------------
 # Q-Learning agent
 # ---------------------------------------------------------------------------
@@ -157,6 +166,22 @@ class QLearningAgent:
         state  = discretise(env_state)
         action = self._best_action(state)
         return ActionInput(action=action)
+
+    def select_action(self, env_state: "EnvironmentState") -> "ActionInput":
+        """
+        Alias for get_action().
+        Added for compatibility with training scripts (train_phase1/2/3.py) and run.py.
+        Does not change or replace get_action() or choose() — all three coexist.
+        """
+        return self.get_action(env_state)
+
+    def decay_epsilon(self) -> None:
+        """
+        Decay self.epsilon by factor 0.995, floored at 0.05.
+        Called once per episode by training scripts.
+        Does not affect any other hyperparameter.
+        """
+        self.epsilon = max(0.05, self.epsilon * 0.995)
 
     # ------------------------------------------------------------------
     # Persistence

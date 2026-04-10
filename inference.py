@@ -4,6 +4,7 @@ import sys
 import requests
 from openai import OpenAI
 from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_formula, safe_score
+from episode_store import EpisodeStore
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,9 @@ MAX_RETRIES    = 3
 TASK_THRESHOLDS: dict[str, float] = TASK_PASSING_SCORES
 
 TASKS = ["easy", "medium", "hard", "nightmare", "elite"]
+
+# Module-level episode store — records every run to outputs/episodes/
+_episode_store = EpisodeStore()
 
 TASK_MAX_STEPS: dict[str, int] = {
     "easy":       30,
@@ -431,6 +435,9 @@ def run_task(task_name: str) -> dict:
     if not session_id:
         print(f"[warn] /reset did not return session_id for task '{task_name}'")
 
+    # Start recording this episode
+    _episode_store.start_episode(session_id, task_name, reset_data.get("seed", 0))
+
     total_reward    = 0.0
     final_status    = "in_progress"
     last_action     = "none"
@@ -501,6 +508,9 @@ def run_task(task_name: str) -> dict:
         memory["previous_actions"].append((step_num, action, last_reward))
         if len(memory["previous_actions"]) > 5:
             memory["previous_actions"].pop(0)
+
+        # Record step for episode replay (obs captured before the step was submitted)
+        _episode_store.record_step(session_id, step_num, obs, action, last_reward, last_reasoning)
         reason        = data.get("reason", "")
         step_label    = data.get("step", step_num)
         done_flag     = data.get("done", False)
@@ -557,6 +567,9 @@ def run_task(task_name: str) -> dict:
     threshold   = TASK_THRESHOLDS.get(task_name, 0.50)
     final_score = _clamp_end_score(score)
     print(f"[END] task={task_name} score={final_score:.2f} steps={step_num}", flush=True)
+
+    # Finalize episode record — saves JSON to outputs/episodes/
+    _episode_store.finalize(session_id, final_score)
 
     return {
         "task_id":           task_name,
