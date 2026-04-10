@@ -58,6 +58,9 @@ THREAT_KEYWORDS: dict[str, list[str]] = {
         "phish", "spear", "credential", "auth fail", "failed auth",
         "t1566", "spear phishing",
     ],
+    # NOTE:
+    # "lateral" is used as LLM-facing keyword and maps internally
+    # to "lateral_movement" in environment logic.
     "lateral": [
         "lateral", "movement", "pivot", "remote serv", "lateral movement",
         "t1021", "lateral connection",

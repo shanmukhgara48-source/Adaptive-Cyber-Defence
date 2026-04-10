@@ -42,6 +42,10 @@ WINDOW: int = 3
 PROMOTE_THRESHOLD: float = 0.65   # avg ≥ this → advance one level
 DEMOTE_THRESHOLD: float  = 0.35   # avg < this  → drop one level
 
+# Minimum episodes before any promote/demote decision is made.
+# Prevents noisy early scores from causing premature difficulty jumps.
+MIN_EPISODES_BEFORE_ADJUST: int = 5
+
 
 # ---------------------------------------------------------------------------
 # CurriculumScheduler
@@ -102,6 +106,18 @@ class CurriculumScheduler:
         avg     = sum(self._scores) / len(self._scores)
         old     = self.current_level
         action  = "hold"
+
+        # Warmup guard: skip promote/demote until enough history is accumulated.
+        # Early episodes are often noisy and should not drive difficulty changes.
+        if len(self.history) < MIN_EPISODES_BEFORE_ADJUST:
+            self.history.append({
+                "score":  round(score, 4),
+                "avg":    round(avg, 4),
+                "action": action,
+                "from":   old,
+                "to":     self.current_level,
+            })
+            return self.current_level
 
         if len(self._scores) == self._window:
             # Only act once we have a full window of data
@@ -182,7 +198,7 @@ class CurriculumScheduler:
             "trajectory": [
                 {
                     "episode": i + 1,
-                    "task":    entry["to"],
+                    "task":    entry["from"],   # task the agent actually ran (not the next level)
                     "score":   entry["score"],
                     "avg":     entry["avg"],
                     "action":  entry["action"],

@@ -26,6 +26,7 @@ from pydantic import BaseModel, field_validator
 from models import Observation
 import importlib.util as _ilu, sys as _sys, os as _os
 from adversarial_generator import generator as _adv_generator
+from constants import COST_RAW
 
 
 # ─── TASK CONFIG IMPORTS ──────────────────────────────────────────────────────
@@ -596,7 +597,9 @@ def _clamp_reward(r: float) -> float:
     if not math.isfinite(r):
         raise ValueError(f"non-finite reward passed to _clamp_reward: {r!r}")
     normalized_reward = (float(r) + 2.0) / 4.0
-    return max(0.0, min(1.0, normalized_reward))
+    # Use 0.001/0.999 (not 0.0/1.0) so the result is always strictly inside (0, 1),
+    # matching the Phase 2 validator requirement even at extreme r values.
+    return max(0.001, min(0.999, normalized_reward))
 
 
 def _clamp_score(sess: Session) -> None:
@@ -1159,9 +1162,8 @@ def step(req: StepRequest):
 
         # ── RESOURCE CHECK ──
         # Compute current resources remaining to enforce budget constraints.
-        _COST_RAW = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
         _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-        _total_spent_now = sum(_COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
+        _total_spent_now = sum(COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
         _total_budget_now = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
         _resources_now = max(0.0, 1.0 - _total_spent_now / _total_budget_now)
         _resource_exhausted = _resources_now <= 0.0
@@ -1659,9 +1661,8 @@ def get_analytics(session_id: str | None = None):
         # Resources remaining: fraction of cumulative budget not yet spent.
         # Total budget = resource_per_step × max_steps; total spent = sum of raw action costs.
         task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-        _COST_RAW = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
         total_spent = sum(
-            _COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
+            COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
             for a in sess.episode_actions_taken
         )
         total_budget = max(0.01, task_budget * sess.task_config.get("max_steps", 50))
@@ -1786,8 +1787,7 @@ def observe(session_id: str | None = None):
         spawned       = max(1, len(sess.state["threats"]))
         containment_rate = round(n_contained / spawned, 3)
         task_budget   = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-        _COST_RAW     = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
-        total_spent   = sum(_COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
+        total_spent   = sum(COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
                             for a in sess.episode_actions_taken)
         total_budget  = max(0.01, task_budget * sess.task_config.get("max_steps", 50))
         resources_remaining = round(max(0.0, 1.0 - total_spent / total_budget), 3)
