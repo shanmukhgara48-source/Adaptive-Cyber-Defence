@@ -5,6 +5,8 @@ import requests
 from openai import OpenAI
 from grader import TASK_PASSING_SCORES, compute_grader_score as _compute_grader_formula, safe_score
 from episode_store import EpisodeStore
+from accuracy_tracker import AccuracyTracker
+from curriculum import CurriculumScheduler
 
 
 # ---------------------------------------------------------------------------
@@ -17,6 +19,11 @@ MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4.1-mini")
 # Print LLM reasoning every step so judges can watch the agent think.
 # Set VERBOSE=false to suppress.
 VERBOSE = os.getenv("VERBOSE", "true").lower() != "false"
+
+# Curriculum learning — set USE_CURRICULUM=true to enable adaptive difficulty.
+# When enabled, run_curriculum() is called instead of the fixed task sequence.
+USE_CURRICULUM    = os.getenv("USE_CURRICULUM", "false").lower() == "true"
+CURRICULUM_EPISODES = int(os.getenv("CURRICULUM_EPISODES", "15"))
 
 
 def _clamp_end_score(x: float) -> float:
@@ -446,6 +453,8 @@ def run_task(task_name: str) -> dict:
     step_num        = 0
     # Light per-episode memory — resets each episode, never persisted
     memory: dict = {"previous_actions": [], "observed_patterns": []}
+    # Per-episode reasoning accuracy tracker
+    tracker = AccuracyTracker()
 
     print(f"{'Step':<6} {'Env Action':<22} {'Reward':<8} {'Env Reason'}")
     print("-" * 70)
@@ -511,6 +520,8 @@ def run_task(task_name: str) -> dict:
 
         # Record step for episode replay (obs captured before the step was submitted)
         _episode_store.record_step(session_id, step_num, obs, action, last_reward, last_reasoning)
+        # Track LLM threat-classification accuracy via reward-proxy
+        tracker.record(last_reasoning, action, last_reward)
         reason        = data.get("reason", "")
         step_label    = data.get("step", step_num)
         done_flag     = data.get("done", False)
@@ -568,8 +579,13 @@ def run_task(task_name: str) -> dict:
     final_score = _clamp_end_score(score)
     print(f"[END] task={task_name} score={final_score:.2f} steps={step_num}", flush=True)
 
+    # Log LLM reasoning accuracy for this episode
+    if VERBOSE:
+        tracker.log(prefix=task_name)
+    llm_accuracy = tracker.summary()
+
     # Finalize episode record — saves JSON to outputs/episodes/
-    _episode_store.finalize(session_id, final_score)
+    _episode_store.finalize(session_id, final_score, extra={"llm_accuracy": llm_accuracy})
 
     return {
         "task_id":           task_name,
@@ -582,6 +598,52 @@ def run_task(task_name: str) -> dict:
         "score":             score,          # already safe; do NOT re-round to 3dp
         "status":            final_status,
     }
+
+
+# ---------------------------------------------------------------------------
+# Curriculum learning loop (opt-in via USE_CURRICULUM=true)
+# ---------------------------------------------------------------------------
+
+def run_curriculum(n_episodes: int = CURRICULUM_EPISODES) -> None:
+    """
+    Run n_episodes with difficulty automatically adjusted after each episode.
+
+    The scheduler promotes when window_avg >= 0.65 and demotes when < 0.35.
+    This is purely additive — grader.py and scoring are untouched.
+    """
+    sep = "=" * 70
+    print(f"\n{sep}")
+    print(f"CURRICULUM MODE — {n_episodes} episodes, adaptive difficulty")
+    print(sep)
+
+    sched   = CurriculumScheduler()
+    results = []
+
+    for ep in range(1, n_episodes + 1):
+        task = sched.current_level
+        print(f"\n[curriculum] Episode {ep}/{n_episodes} — task={task}")
+        result = run_task(task)
+        sched.update(result["score"])
+        results.append((task, result))
+        sched.log()
+
+    # Summary
+    sep2  = "=" * 80
+    dash2 = "-" * 80
+    print(f"\n{sep2}")
+    print("CURRICULUM RESULTS")
+    print(sep2)
+    print(f"{'Ep':<5} {'Task':<12} {'Score':<8} {'Status'}")
+    print(dash2)
+    for i, (task_name, r) in enumerate(results, 1):
+        score = max(0.001, min(0.999, float(r.get("score", 0.001))))
+        print(f"{i:<5} {task_name:<12} {score:<8.3f} {r.get('status', '?')}")
+    print(dash2)
+
+    report = sched.get_report()
+    print(f"\n[CURRICULUM] Episodes: {report['episodes']} | Final Level: {report['final_level']}")
+    print(f"[CURRICULUM] Promotions: {report['promotions']} | Demotions: {report['demotions']}")
+    print(sep2)
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +664,11 @@ def run():
         print(f"[PROBE] Proxy responded: {probe.choices[0].message.content!r}")
     except Exception as e:
         print(f"[PROBE] Warning — probe call failed: {e}")
+
+    # Curriculum mode: adaptive difficulty instead of fixed task sequence
+    if USE_CURRICULUM:
+        run_curriculum()
+        return
 
     results = []
     for task_name in TASKS:

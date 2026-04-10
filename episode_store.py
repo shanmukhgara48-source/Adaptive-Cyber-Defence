@@ -183,9 +183,21 @@ class EpisodeStore:
             "summary":   _obs_summary(obs),
         })
 
-    def finalize(self, session_id: str, final_score: float) -> Path | None:
+    def finalize(
+        self,
+        session_id: str,
+        final_score: float,
+        extra: dict | None = None,
+    ) -> Path | None:
         """
         Compute post-mortem, attach final score, and flush to JSON.
+
+        Parameters
+        ----------
+        extra : optional dict of additional metadata to merge into the record
+                (e.g. ``{"llm_accuracy": tracker.summary()}``).  Keys are
+                merged at the top level; they never overwrite reserved keys
+                (score, steps, post_mortem, finished_at).
 
         Returns the Path of the saved file, or None if session_id was not found.
         """
@@ -193,10 +205,18 @@ class EpisodeStore:
         if episode is None:
             return None
 
-        episode["score"]      = round(_safe_float(final_score), 4)
+        episode["score"]       = round(_safe_float(final_score), 4)
         episode["steps_taken"] = len(episode["steps"])
         episode["post_mortem"] = _compute_post_mortem(episode["steps"])
         episode["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Merge optional metadata — never overwrite core keys
+        if extra:
+            _RESERVED = {"score", "steps", "steps_taken", "post_mortem", "finished_at",
+                         "task", "seed", "session_id", "started_at"}
+            for k, v in extra.items():
+                if k not in _RESERVED:
+                    episode[k] = v
 
         # File name: <task>_s<seed>_<short_session_id>.json
         short_id = session_id[:8] if len(session_id) >= 8 else session_id

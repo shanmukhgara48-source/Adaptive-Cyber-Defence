@@ -25,6 +25,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 from models import Observation
 import importlib.util as _ilu, sys as _sys, os as _os
+from adversarial_generator import generator as _adv_generator
 
 
 # ─── TASK CONFIG IMPORTS ──────────────────────────────────────────────────────
@@ -936,9 +937,10 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # ─── INPUT MODELS ─────────────────────────────────────────────────────────────
 
 class ResetRequest(BaseModel):
-    task:       str = "easy"
-    seed:       int = 0
-    session_id: str | None = None   # optional; omit for auto-generated UUID
+    task:         str  = "easy"
+    seed:         int  = 0
+    session_id:   str | None = None   # optional; omit for auto-generated UUID
+    adversarial:  bool = False        # if True, apply adversarial scenario generator
 
 
 class StepRequest(BaseModel):
@@ -1033,6 +1035,11 @@ def reset(req: ResetRequest = None):
         task_cfg["lateral_spread_base_prob"] * spread, 4
     )
 
+    # Apply adversarial scenario — only when caller explicitly opts in (default=False)
+    if req and req.adversarial:
+        _adv_config = _adv_generator.generate(seed)
+        _adv_generator.apply_to_session(sess, _adv_config)
+
     _SESSIONS[sid] = sess
     global _LATEST_SID
     _LATEST_SID = sid
@@ -1041,6 +1048,7 @@ def reset(req: ResetRequest = None):
     obs["task"]              = task_name
     obs["session_id"]        = sid          # always returned so callers can track it
     obs["attacker_strategy"] = strategy
+    obs["adversarial_mode"]  = bool(req and req.adversarial)
     obs["attacker_config"]   = {            # expose what strategy changed
         "strategy":               strategy,
         "dwell_time_multiplier":  dwell,
@@ -1326,6 +1334,8 @@ def step(req: StepRequest):
         translated = translate_action(raw_action)
         threat_ctx = (matched_threat_type or "UNKNOWN").upper()
         sess.attacker.observe_defender_action(translated, threat_ctx)
+        # Adversarial mid-episode strategy switch — no-op for normal sessions
+        _adv_generator.maybe_switch_strategy(sess)
 
         if s["done"]:
             # Use the single authoritative grader formula (all 4 components)
