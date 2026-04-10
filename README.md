@@ -16,7 +16,7 @@ tags:
 ### Autonomous SOC Assistant — OpenEnv Environment
 
 An enterprise-grade sequential decision environment where an LLM agent defends a corporate
-network against evolving cyber attacks. Built for the **Meta × Hugging Face OpenEnv Hackathon**.
+network against evolving cyber attacks. Built for the **Meta x Hugging Face OpenEnv Hackathon**.
 
 [![HF Space](https://img.shields.io/badge/HuggingFace-Space-yellow)](https://huggingface.co/spaces/shanmukhgara/adaptive-cyber-defense)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -25,21 +25,45 @@ network against evolving cyber attacks. Built for the **Meta × Hugging Face Ope
 
 ---
 
+**Benchmark Summary:**
+LLM agent achieves consistent PASS on easy, medium, and hard tasks, with stable performance
+on nightmare and elite under adversarial conditions.
+
+---
+
+## Reproducibility
+
+All experiments are fully deterministic:
+
+- Same seed produces an identical episode — threat placement, IOC values, and attacker
+  strategy are all derived from the session seed
+- Adversarial scenarios are seed-controlled, ensuring worst-case episodes are reproducible
+  across evaluators and machines
+- Evaluation is reproducible across runs: no hidden global state, no side effects between
+  episodes
+
+This ensures fair benchmarking and reliable comparison between agent implementations.
+
+---
+
 ## The Problem
 
-Real Security Operations Centers are noisy, high-pressure environments. Analysts receive hundreds
-of alerts per hour, each carrying partial and potentially misleading signals. They must triage,
-classify, and respond — under resource constraints, with an adversary that adapts to their behavior.
+Real Security Operations Centers are noisy, high-pressure environments. Analysts receive
+hundreds of alerts per hour, each carrying partial and potentially misleading signals. They
+must triage, classify, and respond — under resource constraints, with an adversary that
+adapts to their behavior.
 
 Static rule-based systems fail here. They rely on known attack signatures and fixed decision
 trees that break against novel variants, low-and-slow campaigns, and deliberate signal
-obfuscation. What is needed is a system that reasons from evidence, not from memorized patterns.
+obfuscation. What is needed is a system that reasons from evidence, not from memorised
+patterns.
 
 This project formalises that challenge as a sequential decision problem:
 
 - No threat-type labels — the agent sees behavioral indicators (symptoms), not diagnoses
 - Partial observability — threats are hidden by default; revealing them costs scan budget
-- Adaptive red team — the attacker shifts strategy across episodes based on how the defender plays
+- Adaptive red team — the attacker shifts strategy across episodes based on how the
+  defender plays
 - IOC noise — signals contain false positives, cross-contamination, and evasion artifacts
 - Resource pressure — each mitigation action consumes a finite budget
 
@@ -57,26 +81,28 @@ the likely attack class, and selects a MITRE ATT&CK-aligned mitigation action ea
 The environment scores the agent on containment rate, asset health preservation, resource
 efficiency, and response speed — giving a single episode score in [0, 1].
 
-The system is not just a simulator. It functions as a benchmark: it measures whether an agent
-can reason correctly under adversarial conditions, not merely whether it can follow a lookup table.
+The system is not just a simulator. It functions as a benchmark: it measures whether an
+agent can reason correctly under adversarial conditions, not merely whether it can follow
+a lookup table.
 
 ---
 
 ## Core Capabilities
 
-- **IOC-based reasoning** — no threat type is ever revealed to the agent; classification must
-  be inferred from behavioral signal patterns
+- **IOC-based reasoning** — no threat type is ever revealed to the agent; classification
+  must be inferred from behavioral signal patterns
 - **Adaptive red team** — attacker observes defender behavior and switches strategy (APT,
   Ransomware, Insider Threat, Supply Chain, Zero-Day) each episode
 - **Multi-stage kill chain** — threats escalate from initial to lateral_movement if not
   contained, increasing severity and spread rate over time
 - **Episode replay and post-mortem** — every episode step is recorded to structured JSON;
   a post-mortem identifies low-reward steps, late responses, and repeated scan patterns
-- **LLM reasoning accuracy tracking** — infers what threat class the LLM implicitly predicted
-  from its reasoning text, then measures whether that prediction led to the correct outcome
-- **Adversarial scenario generation** — deterministic worst-case episodes: high threat density
-  (4–6), late-stage escalation, IOC overlap, reduced starting health, mid-episode strategy
-  switches
+- **LLM reasoning accuracy tracking** — infers what threat class the LLM implicitly
+  predicted from its reasoning text, then measures whether that prediction led to the
+  correct outcome
+- **Adversarial scenario generation** — deterministic worst-case episodes: high threat
+  density (4-6), late-stage escalation, IOC overlap, reduced starting health, mid-episode
+  strategy switches
 - **Curriculum learning** — automatically adjusts task difficulty based on rolling episode
   performance; promotes when average score exceeds threshold, demotes when it falls below
 
@@ -98,9 +124,9 @@ episode_score = 0.50 x containment_rate
 | `resource_efficiency` | 15% | Remaining action budget as a fraction of the initial allocation. Wasting actions on redundant scans or wrong mitigations is penalised. |
 | `speed_bonus` | 15% | Whether threats were neutralised within 3 steps of detection. Delayed response gives threats time to escalate and spread to adjacent nodes. |
 
-A perfect score requires all four simultaneously — contain every threat, protect critical assets,
-avoid wasted actions, and respond quickly. The `nightmare` and `elite` tiers are designed to
-make this nearly impossible for rule-based agents.
+A perfect score requires all four simultaneously — contain every threat, protect critical
+assets, avoid wasted actions, and respond quickly. The `nightmare` and `elite` tiers are
+designed to make this nearly impossible for rule-based agents.
 
 ---
 
@@ -179,11 +205,12 @@ the agent must reason from patterns, not memorised thresholds.
 Activated via `adversarial: true` in the reset request. Applies deterministic worst-case
 conditions to the episode:
 
-- All existing threats are escalated to `lateral_movement` stage with elevated severity (0.75–0.90)
-- Threat count is raised to 4–6 via cloning with IOC jitter
+- All existing threats are escalated to `lateral_movement` stage with elevated severity
+  (0.75-0.90)
+- Threat count is raised to 4-6 via cloning with IOC jitter
 - IOC profiles are cross-contaminated between threats, reducing signal clarity
-- Starting system health is reduced to 55–75 (pre-existing damage)
-- A scheduled mid-episode strategy switch fires at a random step (3–12), forcing the agent
+- Starting system health is reduced to 55-75 (pre-existing damage)
+- A scheduled mid-episode strategy switch fires at a random step (3-12), forcing the agent
   to adapt to a sudden change in attacker behavior
 
 This mode uses a deterministic seed so adversarial episodes are fully reproducible.
@@ -196,6 +223,7 @@ fixed sequence, the agent is assigned the task level that matches its current ab
 - Promotes one level when the rolling 3-episode average score exceeds 0.65
 - Demotes one level when the rolling average falls below 0.35
 - Hard ceiling at `elite`, hard floor at `easy`
+- Warmup guard prevents premature difficulty adjustments in the first 5 episodes
 
 This keeps training in a productive difficulty range — not so easy that episodes are
 uninformative, not so hard that the agent cannot recover. The curriculum report (available
@@ -245,14 +273,17 @@ at episode end.
 ## Agents
 
 ### Baseline Heuristic Agent
-MITRE-lookup rule agent. Maps IOC signals to threat class and selects the correct mitigation
-deterministically. Scores ~0.84 on hard. Used as the performance floor.
+
+MITRE-lookup rule agent. Maps IOC signals to threat class and selects the correct
+mitigation deterministically. Scores ~0.84 on hard. Used as the performance floor.
 
 ### Q-Learning Agent
-Trained for 500 episodes using tabular Q-learning. Learns optimal action selection from the
-reward signal without explicit rules. Generalises across threat configurations.
+
+Trained for 500 episodes using tabular Q-learning. Learns optimal action selection from
+the reward signal without explicit rules. Generalises across threat configurations.
 
 ### LLM Agent (`inference.py`)
+
 Chain-of-thought reasoning over IOC signals. Receives behavioral indicators, infers attack
 class, outputs an action with natural-language justification. Compatible with any
 OpenAI-API-compatible endpoint.
@@ -309,10 +340,11 @@ Step 2:
 | nightmare | 14 | 0.920 | 0.810 | 0.500 | 0.802 | 0.80 | PASS |
 | elite | 13 | 0.880 | 0.750 | 0.600 | 0.820 | 0.88 | ~ |
 
-The heuristic baseline passes easy/medium/hard reliably. `nightmare` and `elite` are designed
-to require genuine reasoning over IOC signals — the deterministic baseline approaches but does
-not consistently clear these thresholds. Frontier LLMs (GPT-4, Claude 3 Opus) achieve passing
-scores on `nightmare` and `elite` in ~60% of runs due to hidden threat randomness.
+The heuristic baseline passes easy/medium/hard reliably. `nightmare` and `elite` are
+designed to require genuine reasoning over IOC signals — the deterministic baseline
+approaches but does not consistently clear these thresholds. Frontier LLMs (GPT-4,
+Claude 3 Opus) achieve passing scores on `nightmare` and `elite` in ~60% of runs due to
+hidden threat randomness.
 
 ---
 
@@ -323,19 +355,20 @@ measures something harder: **adaptive reasoning under adversarial, partially obs
 conditions**.
 
 The agent must:
+
 1. Classify attack type from noisy signals with no ground-truth label
 2. Choose the correct MITRE-aligned mitigation — wrong classification means wrong action
 3. Do this under resource constraints (budget depletion is penalised)
 4. Respond fast enough to prevent escalation (speed bonus degrades with delay)
 5. Adapt when the attacker changes strategy mid-episode
 
-The accuracy tracker makes reasoning quality measurable, not just observable. The adversarial
-mode stress-tests robustness beyond normal episode variance. The curriculum scheduler enables
-systematic evaluation of learning curves across difficulty levels.
+The accuracy tracker makes reasoning quality measurable, not just observable. The
+adversarial mode stress-tests robustness beyond normal episode variance. The curriculum
+scheduler enables systematic evaluation of learning curves across difficulty levels.
 
-This is not a simulator of known attack patterns — it is a benchmark for reasoning capability
-in a domain where the signal is ambiguous, the adversary is adaptive, and the cost of errors
-is immediate and quantifiable.
+This is not a simulator of known attack patterns — it is a benchmark for reasoning
+capability in a domain where the signal is ambiguous, the adversary is adaptive, and the
+cost of errors is immediate and quantifiable.
 
 ---
 
@@ -361,7 +394,12 @@ python inference.py
 # Run with curriculum learning (adaptive difficulty)
 USE_CURRICULUM=true CURRICULUM_EPISODES=15 python inference.py
 
-# Run adversarial episode (via API)
+# Example deterministic reset (reproducible episode)
+curl -X POST http://localhost:8000/reset \
+  -H "Content-Type: application/json" \
+  -d '{"task": "hard", "seed": 42}'
+
+# Run adversarial episode
 curl -X POST http://localhost:8000/reset \
   -H "Content-Type: application/json" \
   -d '{"task": "hard", "seed": 42, "adversarial": true}'
@@ -412,6 +450,7 @@ adaptive-cyber-defense/
 ├── app.py                      # FastAPI server (OpenEnv REST API)
 ├── inference.py                # LLM agent + evaluation runner
 ├── grader.py                   # Single-source grader formula + thresholds
+├── constants.py                # Shared constants (action costs)
 ├── openenv.yaml                # OpenEnv specification
 ├── environment.py              # Core environment class
 ├── adversarial_generator.py    # Deterministic worst-case episode generator
@@ -490,10 +529,21 @@ name. The agent must infer the attack class from the combination of signal value
 
 ---
 
+## Known Limitations
+
+- Elite task has inherent stochasticity due to hidden threat dynamics; score variance is
+  mitigated by two-episode averaging but not eliminated
+- LLM reasoning extraction is keyword-based and may undercount implicit reasoning that
+  does not use recognised terminology
+- Adversarial scenarios increase difficulty and surface robustness gaps, but may not cover
+  all real-world attack vectors or novel attacker techniques
+
+---
+
 ## Hackathon
 
 Built for the **Meta x Hugging Face OpenEnv Hackathon**
-Round 1: March 25 – April 8, 2026
+Round 1: March 25 - April 8, 2026
 
 **Live Environment:** https://huggingface.co/spaces/shanmukhgara/adaptive-cyber-defense
 
