@@ -1,0 +1,40 @@
+{
+  "winner": "B",
+  "winner_config": {
+    "lr": 0.0005,
+    "gamma": 0.995,
+    "exp_decay_rate": 0.997,
+    "label": "slow-decay long-horizon"
+  },
+  "bench_seeds": [
+    42,
+    43,
+    44
+  ],
+  "all_results": {
+    "A": {
+      "hard_mean": 0.5532,
+      "hard_std": 0.0743,
+      "passed": false,
+      "train_last20": 0.1878
+    },
+    "B": {
+      "hard_mean": 0.6321,
+      "hard_std": 0.2787,
+      "passed": false,
+      "train_last20": 0.1428
+    },
+    "C": {
+      "hard_mean": 0.47,
+      "hard_std": 0.0914,
+      "passed": false,
+      "train_last20": 0.2067
+    },
+    "D": {
+      "hard_mean": 0.5469,
+      "hard_std": 0.064,
+      "passed": false,
+      "train_last20": 0.1796
+    }
+  }
+}

@@ -1,0 +1,87 @@
+{
+  "phase": 4,
+  "eval_seeds": [
+    10,
+    20,
+    30,
+    40,
+    50
+  ],
+  "task_names": [
+    "hard"
+  ],
+  "agents": [
+    "heuristic",
+    "dqn_300ep",
+    "dqn_winner",
+    "ql"
+  ],
+  "grader_validation": {
+    "total_scores": 20,
+    "violations": 0,
+    "clamps": 0,
+    "passed": true
+  },
+  "results": {
+    "heuristic": {
+      "hard": {
+        "scores": [
+          0.8317,
+          0.7369,
+          0.8562,
+          0.8431,
+          0.7297
+        ],
+        "mean": 0.7995,
+        "std": 0.0547,
+        "threshold": 0.7,
+        "passed": true
+      }
+    },
+    "dqn_300ep": {
+      "hard": {
+        "scores": [
+          0.6266,
+          0.7104,
+          0.6116,
+          0.5214,
+          0.55
+        ],
+        "mean": 0.604,
+        "std": 0.0658,
+        "threshold": 0.7,
+        "passed": false
+      }
+    },
+    "dqn_winner": {
+      "hard": {
+        "scores": [
+          0.5455,
+          0.7147,
+          0.7387,
+          0.3277,
+          0.3686
+        ],
+        "mean": 0.539,
+        "std": 0.17,
+        "threshold": 0.7,
+        "passed": false
+      }
+    },
+    "ql": {
+      "hard": {
+        "scores": [
+          0.3431,
+          0.2789,
+          0.3859,
+          0.3861,
+          0.3082
+        ],
+        "mean": 0.3404,
+        "std": 0.0424,
+        "threshold": 0.7,
+        "passed": false
+      }
+    }
+  }
+}

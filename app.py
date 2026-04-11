@@ -26,7 +26,7 @@ from pydantic import BaseModel, field_validator
 from models import Observation
 import importlib.util as _ilu, sys as _sys, os as _os
 from adversarial_generator import generator as _adv_generator
-from constants import COST_RAW
+from constants import COST_RAW, get_scaled_costs
 
 
 # ─── TASK CONFIG IMPORTS ──────────────────────────────────────────────────────
@@ -39,6 +39,7 @@ from grader import (
     TASK_PASSING_SCORES,
     compute_speed_bonus as _compute_speed_bonus,
     compute_grader_score as _grader_formula,
+    compute_criticality_weighted_containment as _criticality_weighted_containment,
     safe_score,
 )
 
@@ -138,10 +139,83 @@ ADJACENCY: dict[str, set] = {
     "node_5": {"node_4", "node_2"},
 }
 
+# Node criticality — determines the weighted impact of containment and health loss.
+# node_2 and node_5 form the hub ring in the linear+hub topology; compromising them
+# is disproportionately dangerous because they route traffic to all other nodes.
+# Agents that greedy-contain the easiest-to-reach threat rather than the most
+# critical one will receive a lower criticality_weighted_containment score.
+# This forces strategic prioritisation, defeating both greedy-first and scan-all baselines.
+NODE_CRITICALITY: dict[str, float] = {
+    "node_1": 0.40,   # edge leaf — lower-value target
+    "node_2": 0.90,   # primary hub (connects to node_1, node_3, node_5)
+    "node_3": 0.60,   # mid-chain application server
+    "node_4": 0.50,   # secondary endpoint
+    "node_5": 0.80,   # alternate hub (connects to node_2, node_4)
+}
+
 VALID_ACTIONS = frozenset(
     ["block_ip", "isolate_machine", "patch", "ignore"]
     + [f"scan_node_{i}" for i in range(1, TOTAL_NODES + 1)]
+    + [f"verify_node_{i}" for i in range(1, TOTAL_NODES + 1)]
+    + [f"monitor_node_{i}" for i in range(1, TOTAL_NODES + 1)]
 )
+
+# Difficulty-scaled scan cost.  On hard (budget=0.30/step × 30 steps = 9.0),
+# scanning all 5 nodes costs 5 × 0.45 = 2.25 per step — 75 % of one step's
+# budget.  Even one scan/step at 0.45 exceeds the per-step allowance, making
+# scan-all-nodes strategy budget-prohibitive at hard+.
+# Easy remains affordable (0.15/scan) so new agents are not immediately penalised.
+_SCAN_COST_BY_DIFFICULTY: dict[str, float] = {
+    "easy":       0.15,
+    "medium":     0.28,
+    "hard":       0.45,
+    "nightmare":  0.55,
+    "elite":      0.65,
+}
+
+# IOC noise applied when a scan first reveals a threat.  Scans give imperfect
+# information — the reveal adds ±30% noise to each IOC field.  Agents must
+# track IOC evolution over subsequent steps to reduce classification uncertainty,
+# rather than relying on a single post-scan snapshot.
+_SCAN_IOC_NOISE_FACTOR: float = 0.30
+
+# ── SEQUENTIAL DECISION MECHANICS ────────────────────────────────────────────
+# verify_node_X cost: same tier as scan — spending resources to confirm a threat
+# before acting is the recommended practice but requires budget discipline.
+_VERIFY_COST_BY_DIFFICULTY: dict[str, float] = {
+    "easy":       0.12,
+    "medium":     0.22,
+    "hard":       0.38,
+    "nightmare":  0.48,
+    "elite":      0.58,
+}
+
+# Monitor cost is intentionally cheap: rewarding post-containment vigilance
+# without making it budget-prohibitive.  Flat across difficulties.
+_MONITOR_COST: float = 0.05
+
+# patch takes 2 steps to deploy; block_ip and isolate_machine are instant.
+# During the delay window the threat continues dealing health damage and can
+# still escalate — agents must plan ahead and not re-act on mitigating threats.
+_MITIGATION_DELAY: dict[str, int] = {
+    "patch":           2,
+    "block_ip":        0,
+    "isolate_machine": 0,
+}
+
+# Resurface risk per threat type — probability weight (0-1) applied each step
+# after _RESURFACE_START_STEP if no monitor action was taken post-containment.
+# Persistent threats (malware, ransomware, lateral_movement) have meaningful risk;
+# non-persistent threats (phishing, ddos) rarely resurface.
+_RESURFACE_RISK_BY_TYPE: dict[str, float] = {
+    "malware":          0.60,
+    "ransomware":       0.70,
+    "lateral_movement": 0.50,
+    "phishing":         0.15,
+    "ddos":             0.10,
+}
+_RESURFACE_START_STEP: int   = 4    # steps after containment before resurface risk activates
+_BASE_RESURFACE_PROB:  float = 0.22 # per-step probability (scaled by resurface_risk)
 
 MAX_ACTION_LEN = 64
 MAX_REWARD = 2.0
@@ -157,57 +231,68 @@ TECHNIQUE_DEFAULTS = {
 
 # ─── BEHAVIORAL IOC PROFILES ─────────────────────────────────────────────────
 # Each value is a (min, max) integer range for the spawned value.
-# Profiles are designed with non-overlapping high-signal axes so a reasoning
-# agent can infer the threat class without being given the type directly:
-#   DDoS        → uniquely extreme packets_per_second (900-9500)
-#   Ransomware  → uniquely extreme outbound_data_bytes (9000-48000)
-#   Lat. Move.  → uniquely high lateral_connection_count (12-38)
-#   Phishing    → high failed_auth_attempts + low everything else
-#   Malware     → high unusual_process_count + moderate outbound
+#
+# ADVERSARIAL DESIGN — profiles are intentionally overlapping so no single
+# feature uniquely identifies a threat class.  Agents must reason across
+# the full IOC vector; any single-axis threshold classifier will misclassify
+# the overlap region (≈30-40% of spawns) and be penalised for wrong actions.
+#
+# Overlap map (shared value ranges between adjacent types):
+#   pps:     malware(20-300) ∩ ddos(150-4000)      at 150-300
+#            phishing(5-100) ∩ malware(20-300)      at 20-100
+#   auth:    phishing(30-170) ∩ lateral(15-120)     at 30-120
+#            lateral(15-120) ∩ ransomware(10-70)    at 10-70
+#   ob:      malware(1000-7000) ∩ ransomware(3500-18000) at 3500-7000
+#   lat:     ransomware(5-24) ∩ lateral(4-22)       at 5-22
+#            malware(3-16) ∩ ransomware(5-24)       at 5-16
+#   proc:    malware(6-28) ∩ ransomware(10-32)      at 10-28
+#
+# Correct classification requires combining ≥2 signals — mitigating the
+# single-axis lookup exploit described in the adversarial evaluation.
 _IOC_PROFILES: dict[str, dict] = {
     "phishing": {
-        "packets_per_second":       (1, 8),
-        "failed_auth_attempts":     (45, 200),
-        "outbound_data_bytes":      (80, 600),
-        "lateral_connection_count": (0, 2),
-        "unusual_process_count":    (1, 4),
-        "spread_rate":              (0.05, 0.25),
+        "packets_per_second":       (5, 100),    # overlaps malware (20-300) at 20-100
+        "failed_auth_attempts":     (30, 170),   # still highest but lateral overlaps at 30-120
+        "outbound_data_bytes":      (100, 2000), # was (80-600); overlap with malware bottom
+        "lateral_connection_count": (0, 8),      # was (0-2); overlaps malware (3-16) at 3-8
+        "unusual_process_count":    (2, 12),     # was (1-4); overlaps malware (6-28) at 6-12
+        "spread_rate":              (0.05, 0.30),
         "is_persistent":            False,
     },
     "malware": {
-        "packets_per_second":       (15, 65),
-        "failed_auth_attempts":     (0, 8),
-        "outbound_data_bytes":      (900, 4500),
-        "lateral_connection_count": (2, 10),
-        "unusual_process_count":    (6, 20),
-        "spread_rate":              (0.30, 0.65),
+        "packets_per_second":       (20, 300),   # was (15-65); overlaps ddos (150-4000) at 150-300
+        "failed_auth_attempts":     (5, 50),     # was (0-8); overlaps phishing (30-170) at 5-50
+        "outbound_data_bytes":      (1000, 7000),# was (900-4500); overlaps ransomware at 3500-7000
+        "lateral_connection_count": (3, 16),     # was (2-10); overlaps ransomware (5-24) at 5-16
+        "unusual_process_count":    (6, 28),     # was (6-20); overlaps ransomware (10-32) at 10-28
+        "spread_rate":              (0.25, 0.65),
         "is_persistent":            True,
     },
     "ddos": {
-        "packets_per_second":       (900, 9500),
-        "failed_auth_attempts":     (0, 5),
-        "outbound_data_bytes":      (0, 120),
-        "lateral_connection_count": (0, 2),
-        "unusual_process_count":    (1, 3),
-        "spread_rate":              (0.0, 0.08),
+        "packets_per_second":       (150, 4000), # was (900-9500); overlaps malware (20-300) at 150-300
+        "failed_auth_attempts":     (0, 25),     # was (0-5); small lift creates phishing mimicry
+        "outbound_data_bytes":      (50, 600),   # was (0-120)
+        "lateral_connection_count": (0, 6),      # was (0-2)
+        "unusual_process_count":    (1, 8),      # was (1-3)
+        "spread_rate":              (0.0, 0.10),
         "is_persistent":            False,
     },
     "ransomware": {
-        "packets_per_second":       (5, 25),
-        "failed_auth_attempts":     (8, 45),
-        "outbound_data_bytes":      (9000, 48000),
-        "lateral_connection_count": (6, 20),
-        "unusual_process_count":    (10, 28),
-        "spread_rate":              (0.55, 0.95),
+        "packets_per_second":       (8, 60),     # was (5-25)
+        "failed_auth_attempts":     (10, 70),    # was (8-45); overlaps lateral (15-120) at 15-70
+        "outbound_data_bytes":      (3500, 18000),# was (9000-48000); still highest but overlaps malware at 3500-7000
+        "lateral_connection_count": (5, 24),     # was (6-20); overlaps lateral (4-22) at 5-22
+        "unusual_process_count":    (10, 32),    # was (10-28)
+        "spread_rate":              (0.50, 0.92),
         "is_persistent":            True,
     },
     "lateral_movement": {
-        "packets_per_second":       (20, 90),
-        "failed_auth_attempts":     (25, 115),
-        "outbound_data_bytes":      (200, 1200),
-        "lateral_connection_count": (12, 38),
-        "unusual_process_count":    (3, 10),
-        "spread_rate":              (0.50, 0.90),
+        "packets_per_second":       (20, 180),   # was (20-90)
+        "failed_auth_attempts":     (15, 120),   # was (25-115); overlaps phishing (30-170) at 30-120
+        "outbound_data_bytes":      (200, 3000), # was (200-1200); overlaps malware at 1000-3000
+        "lateral_connection_count": (4, 22),     # was (12-38); still highest but overlaps ransomware at 5-22
+        "unusual_process_count":    (3, 16),     # was (3-10); overlaps malware (6-28) at 6-16
+        "spread_rate":              (0.45, 0.88),
         "is_persistent":            True,
     },
 }
@@ -223,6 +308,57 @@ _FP_IOC_PROFILE: dict = {
     "is_persistent":            False,
 }
 
+
+# ── KILL CHAIN PROGRESSION ────────────────────────────────────────────────────
+# Each attack type has a staged kill chain.  Threats start at stage_idx=0 and
+# advance each step with probability _KILL_CHAIN_ADVANCE_PROB.  Later stages:
+#   • emit amplified IOC signals (harder to classify, blend across attack types)
+#   • deal more health damage per step (kill_chain_health_multiplier)
+#   • have higher resurface risk on containment
+#
+# Stage format: (stage_name, health_drain_multiplier, ioc_amplifiers: dict[str, float])
+# ioc_amplifiers multiply existing IOC values at transition — signals sharpen/shift.
+#
+# Research motivation: single-stage threats are solvable by a memoryless reactive
+# policy (scan → classify → mitigate).  Kill chains force the agent to track stage
+# history across multiple steps, plan ahead (patch early, don't wait for encryption),
+# and reason about escalating damage vs. available budget — impossible for stateless
+# single-step classifiers.
+KILL_CHAIN_STAGES: dict[str, list] = {
+    "phishing": [
+        ("initial_access",    1.0, {}),
+        ("credential_access", 1.8, {"failed_auth_attempts": 2.0, "outbound_data_bytes": 1.5}),
+        ("lateral_movement",  2.5, {"lateral_connection_count": 3.0, "failed_auth_attempts": 1.5}),
+        ("exfiltration",      3.5, {"outbound_data_bytes": 4.0, "lateral_connection_count": 2.0}),
+    ],
+    "malware": [
+        ("initial_access",    1.0, {}),
+        ("execution",         1.5, {"unusual_process_count": 2.0, "packets_per_second": 1.5}),
+        ("persistence",       2.0, {"unusual_process_count": 1.5, "lateral_connection_count": 1.5}),
+        ("lateral_movement",  3.0, {"lateral_connection_count": 2.5, "packets_per_second": 2.0}),
+    ],
+    "ransomware": [
+        ("initial_access",    1.0, {}),
+        ("execution",         2.0, {"unusual_process_count": 2.5}),
+        ("encryption",        4.0, {"outbound_data_bytes": 3.5, "unusual_process_count": 2.0}),
+        ("exfiltration",      5.0, {"outbound_data_bytes": 6.0, "lateral_connection_count": 2.0}),
+    ],
+    "ddos": [
+        ("reconnaissance",    0.5, {}),
+        ("amplification",     2.0, {"packets_per_second": 4.0}),
+        ("saturation",        4.0, {"packets_per_second": 12.0, "unusual_process_count": 1.5}),
+    ],
+    "lateral_movement": [
+        ("discovery",         1.0, {}),
+        ("lateral_movement",  2.0, {"lateral_connection_count": 2.5}),
+        ("privilege_escalation", 3.0, {"failed_auth_attempts": 3.0, "lateral_connection_count": 2.0}),
+    ],
+}
+
+# Per-step probability of advancing one stage in the kill chain.
+# Lower than attack_progression_prob (0.25) so kill chain and stage-escalation
+# are distinct mechanics; each is independently tunable per difficulty.
+_KILL_CHAIN_ADVANCE_PROB: float = 0.28
 
 _HARD_DIFFICULTIES = {"hard", "nightmare", "elite"}
 
@@ -266,20 +402,11 @@ def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
     proc = _ni(proc, 0.30)
     sr   = round(max(0.0, min(1.0, sr * (1 + rng.uniform(-0.20, 0.20)))), 3)
 
-    # Noise floor: ensure dominant IOC for each real threat type stays above a
-    # meaningful minimum so the agent always has something to reason about.
-    # False positives intentionally keep their low values.
-    if not is_fp:
-        if t_type == "ddos":
-            pps  = max(pps, 200)
-        elif t_type == "ransomware":
-            ob   = max(ob, 500)
-        elif t_type == "lateral_movement":
-            lat  = max(lat, 5)
-        elif t_type == "phishing":
-            auth = max(auth, 10)
-        elif t_type == "malware":
-            proc = max(proc, 3)
+    # NO noise floors — removing the per-type minimum guarantees broke the single-feature
+    # threshold exploit.  Without floors, the overlap regions in _IOC_PROFILES can produce
+    # low values on the historically "dominant" axis, forcing multi-signal reasoning.
+    # (The old floors guaranteed DDoS pps≥200, ransomware ob≥500, etc. — enough
+    #  to make a one-feature lookup correct 100% of the time.)
 
     iocs = {
         "packets_per_second":       pps,
@@ -295,23 +422,41 @@ def _spawn_iocs(t_type: str, rng: random.Random, is_fp: bool = False,
         ),
     }
 
-    # Cross-signal contamination for hard+ tasks: real attacks blend multiple techniques.
-    # Every branch consumes exactly 3 RNG calls (contamination, contamination2, one randint)
-    # so the post-spawn RNG sequence is identical regardless of threat type.
-    if not is_fp and difficulty in _HARD_DIFFICULTIES:
-        contamination = rng.uniform(0.3, 0.6)   # call 1 — always consumed
-        contamination2 = rng.uniform(0.2, 0.4)  # call 2 — always consumed
+    # Cross-signal contamination — now applied at ALL difficulties, not just hard+.
+    # Strength scales with difficulty so easy episodes remain learnable but not exploitable.
+    # Every branch consumes exactly 3 RNG calls to keep the sequence length uniform
+    # across threat types and difficulty levels (seed determinism preserved).
+    if not is_fp:
+        # Contamination strength: easy=weak, medium=moderate, hard+=strong
+        if difficulty in _HARD_DIFFICULTIES:
+            contamination  = rng.uniform(0.30, 0.60)   # call 1
+            contamination2 = rng.uniform(0.20, 0.45)   # call 2
+        elif difficulty == "medium":
+            contamination  = rng.uniform(0.15, 0.35)   # call 1
+            contamination2 = rng.uniform(0.10, 0.25)   # call 2
+        else:  # easy
+            contamination  = rng.uniform(0.05, 0.20)   # call 1
+            contamination2 = rng.uniform(0.05, 0.15)   # call 2
         if t_type == "lateral_movement":
-            # Attacker reuses stolen credentials while traversing — adds auth-failure signal
-            iocs["failed_auth_attempts"] += int(rng.randint(45, 200) * contamination)
+            # Stolen credentials add auth-failure signal — blends with phishing
+            iocs["failed_auth_attempts"] += int(rng.randint(15, 120) * contamination)
         elif t_type == "ransomware":
-            # Stages data across nodes before encrypting — adds lateral-connection signal
-            iocs["lateral_connection_count"] += int(rng.randint(12, 38) * contamination)
+            # Data staging adds lateral-connection signal — blends with lateral_movement
+            iocs["lateral_connection_count"] += int(rng.randint(5, 24) * contamination)
         elif t_type == "malware":
-            # C2 beaconing creates elevated network traffic — bleeds into DoS-like range
-            iocs["packets_per_second"] += int(rng.randint(900, 9500) * contamination2)
-        else:
-            _ = rng.randint(0, 1)  # call 3 — consumed to keep RNG sequence length uniform
+            # C2 beaconing elevates packet rate — blends into lower DDoS range
+            iocs["packets_per_second"] += int(rng.randint(50, 500) * contamination2)
+        elif t_type == "ddos":
+            # Amplification reflectors spawn unusual processes — blends with malware
+            iocs["unusual_process_count"] += int(rng.randint(2, 10) * contamination)
+        else:  # phishing
+            # Credential harvesting exfiltrates small data — blends with malware outbound
+            iocs["outbound_data_bytes"] += int(rng.randint(100, 1200) * contamination)
+    else:
+        # False positives: still consume 3 RNG calls to keep sequence length identical
+        _ = rng.uniform(0.0, 1.0)   # call 1
+        _ = rng.uniform(0.0, 1.0)   # call 2
+        _ = rng.randint(0, 1)        # call 3
 
     return iocs
 
@@ -474,19 +619,74 @@ def _initial_severity(t_type: str, rng: random.Random) -> float:
 
 
 def _compute_grader_score(sess: "Session") -> float:
-    """Extract components from session state, delegate formula to grader.py."""
+    """Extract components from session state, delegate formula to grader.py.
+
+    Resource efficiency uses get_scaled_costs() so no MITRE-correct action
+    (e.g. isolate_machine on hard task) is systematically penalised for
+    exceeding the per-step budget.  Step-level _resource_exhausted tracking
+    deliberately retains COST_RAW to keep gameplay mechanics unchanged.
+
+    FP penalty = min(1.0, false_positive_actions / max(1, real_threats_seen)).
+    Max deduction is 0.10 — enough to matter at score thresholds without
+    punishing early exploratory over-action catastrophically.
+    """
     s = sess.state
     _contained = sum(1 for t in s["threats"] if t.get("contained") and not t.get("is_false_positive"))
-    _total = max(1, sum(1 for t in s["threats"] if not t.get("is_false_positive")))
-    containment_rate = _contained / _total
+    _total_real = max(1, sum(1 for t in s["threats"] if not t.get("is_false_positive")))
+    containment_rate = _contained / _total_real
     critical_health = s["system_health"] / 100.0
     _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-    _cost_raw = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
-    _total_spent = sum(_cost_raw.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
+    # Scaled action costs: no correct mitigation exceeds resource_per_step
+    _scaled = get_scaled_costs(_task_budget)
+    # Difficulty-scaled scan/verify cost (same as used in step resource check)
+    _scan_cost_grader   = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
+    _verify_cost_grader = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
+    def _action_cost_grader(a: str) -> float:
+        if a.startswith("scan"):    return _scan_cost_grader
+        if a.startswith("verify"):  return _verify_cost_grader
+        if a.startswith("monitor"): return _MONITOR_COST
+        return _scaled.get(a, 0.0)
+    _total_spent = sum(_action_cost_grader(a) for a in sess.episode_actions_taken)
     _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
-    resource_efficiency = max(0.0, 1.0 - _total_spent / _total_budget)
+    raw_efficiency = max(0.0, 1.0 - _total_spent / _total_budget)
+
+    # Resource efficiency damping — closes the under-spending exploit.
+    # An agent that ignores all threats spends nothing (raw_efficiency=1.0) but
+    # also contains nothing (containment_rate=0).  Frugality is only efficient
+    # when threats are being contained.  When threats remain active, unspent
+    # budget represents missed interventions, not genuine resource discipline.
+    #
+    # Damping formula:
+    #   uncontained_fraction = (total_real - contained) / total_real ∈ [0, 1]
+    #   damping              = 1.0 - 0.5 × uncontained_fraction ∈ [0.5, 1.0]
+    #   resource_efficiency  = raw_efficiency × damping
+    #
+    # Effect on exploit:
+    #   ignore-all agent:   raw=1.0, damping=0.5 → efficiency=0.50  (was 1.0)
+    #   contain-all agent:  raw=variable, damping=1.0 → no penalty
+    #   contain-half agent: raw=variable, damping=0.75
+    #
+    # The 0.5 floor ensures partial credit for genuinely tight-budget scenarios
+    # where an agent correctly prioritises surviving with unspent budget over
+    # wasting resources on low-value actions.
+    _uncontained_fraction = (_total_real - _contained) / _total_real
+    _efficiency_damping   = 1.0 - 0.5 * _uncontained_fraction
+    resource_efficiency   = raw_efficiency * _efficiency_damping
+
     speed_bonus = _compute_speed_bonus(sess.containment_events)
-    return _grader_formula(containment_rate, critical_health, resource_efficiency, speed_bonus)
+    # FP penalty: over-action on ghost alerts, bounded to [0, 1]
+    fp_penalty = min(1.0, sess.false_positive_actions / _total_real)
+    # Criticality-weighted containment: high-value hub nodes (node_2, node_5) matter more.
+    # Blended 60/40 with raw containment_rate inside _grader_formula.
+    cwc = _criticality_weighted_containment(s["threats"], NODE_CRITICALITY)
+    return _grader_formula(
+        containment_rate=containment_rate,
+        critical_health=critical_health,
+        resource_efficiency=resource_efficiency,
+        speed_bonus=speed_bonus,
+        fp_penalty=fp_penalty,
+        criticality_weighted_containment=cwc,
+    )
 
 
 def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None,
@@ -511,6 +711,26 @@ def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None,
             "spread_attempted": False,
             "mitre_id":        MITRE_MAP[t_type],
             "severity":        _initial_severity(t_type, rng),
+            # ── Sequential decision fields ───────────────────────────────────
+            # is_verified: agent must call verify_node_X before mitigating to
+            # avoid an unverified-action penalty.  Skipping verify is allowed
+            # but yields a 50% failure roll and a −0.20 reward penalty.
+            "is_verified":           False,
+            # pending_action/mitigation_progress: patch is a 2-step delayed action.
+            # During the delay the threat keeps escalating; agents must track it.
+            "pending_action":        None,
+            "mitigation_progress":   0,
+            # resurface_risk: probability weight for post-containment resurgence.
+            # Rises each time the threat resurfaces.  Reduced by monitor actions.
+            "resurface_risk":        _RESURFACE_RISK_BY_TYPE.get(t_type, 0.30),
+            # steps_since_contained: clock for resurface check start.
+            "steps_since_contained": 0,
+            # ── Kill chain fields ────────────────────────────────────────────
+            # kill_chain_stage_idx: current position in KILL_CHAIN_STAGES[type].
+            # Advances each step with _KILL_CHAIN_ADVANCE_PROB.  Higher index =
+            # more damage, more ambiguous IOC signals, harder to contain.
+            "kill_chain_stage_idx":        0,
+            "kill_chain_health_multiplier": 1.0,  # from current stage entry
             **iocs,
         })
     # If attacker has a strategy, bias threat types accordingly
@@ -766,6 +986,150 @@ def _age_threats(sess: Session) -> None:
                             })
                             # Increment parent's affected_node_count to signal spread
                             t["affected_node_count"] = t.get("affected_node_count", 1) + 1
+                            # Lateral-spread children inherit new-threat sequential + kill-chain fields
+                            sess.state["threats"][-1].update({
+                                "is_verified":                 False,
+                                "pending_action":              None,
+                                "mitigation_progress":         0,
+                                "resurface_risk":              _RESURFACE_RISK_BY_TYPE.get(new_type, 0.30),
+                                "steps_since_contained":       0,
+                                "kill_chain_stage_idx":        0,
+                                "kill_chain_health_multiplier": 1.0,
+                            })
+
+    # ── Kill chain advancement ────────────────────────────────────────────────
+    # Each active, non-FP threat rolls each step to advance one stage in its
+    # attack-type-specific kill chain.  Advancing applies IOC amplifiers (making
+    # the threat harder to classify) and raises the health drain multiplier.
+    # Stage transitions consume one RNG call per active threat for determinism.
+    for t in sess.state["threats"]:
+        if t.get("contained") or t.get("is_false_positive"):
+            continue
+        chain = KILL_CHAIN_STAGES.get(t.get("original_type", t["type"]), [])
+        if not chain:
+            _ = sess.rng.random()   # consume RNG call to preserve sequence length
+            continue
+        idx = int(t.get("kill_chain_stage_idx", 0))
+        if idx >= len(chain) - 1:
+            _ = sess.rng.random()   # already at final stage — consume for determinism
+            continue
+        if sess.rng.random() < _KILL_CHAIN_ADVANCE_PROB:
+            idx += 1
+            stage_name, health_mult, ioc_amps = chain[idx]
+            t["kill_chain_stage_idx"]        = idx
+            t["kill_chain_health_multiplier"] = health_mult
+            # Apply IOC amplifiers — signals shift to reflect the new stage's behaviour.
+            # Amplification blends signals across attack classes (e.g. phishing at
+            # lateral_movement stage now looks partly like a lateral_movement threat).
+            for ioc_key, factor in ioc_amps.items():
+                if ioc_key in t and isinstance(t[ioc_key], (int, float)):
+                    new_val = int(t[ioc_key] * factor)
+                    t[ioc_key] = max(0, new_val)
+            # Stage advancement auto-reveals the threat — hard to miss a threat in encryption
+            if idx >= 2 and not t.get("visible"):
+                t["visible"] = True
+
+    # ── Pending mitigation resolution (delayed patch deployment) ─────────────
+    # patch actions queue a 2-step delayed containment.  Each step we decrement
+    # the counter; when it reaches 0 the threat is marked contained and a
+    # containment_event is recorded for the speed_bonus calculation.
+    for t in sess.state["threats"]:
+        if not t.get("contained") and t.get("pending_action") and t.get("mitigation_progress", 0) > 0:
+            t["mitigation_progress"] -= 1
+            if t["mitigation_progress"] == 0:
+                t["contained"] = True
+                t["pending_action"] = None
+                sess.containment_events.append({
+                    "threat_id":          t["id"],
+                    "age_at_containment": t["age"],
+                    "threat_type":        t.get("original_type", t["type"]),
+                })
+
+    # ── Resurface check (post-containment persistent threats) ────────────────
+    # Contained persistent threats that haven't been monitored within
+    # _RESURFACE_START_STEP steps have a chance to re-activate each step.
+    # Re-activated threats reset to "detected" phase with elevated severity,
+    # deal an immediate health penalty, and raise their own resurface_risk so
+    # each recurrence is harder to permanently eliminate.
+    for t in sess.state["threats"]:
+        if not t.get("contained"):
+            continue
+        if t.get("resurface_risk", 0.0) <= 0.0:
+            continue
+        t["steps_since_contained"] = t.get("steps_since_contained", 0) + 1
+        if t["steps_since_contained"] < _RESURFACE_START_STEP:
+            continue
+        if sess.rng.random() < _BASE_RESURFACE_PROB * t["resurface_risk"]:
+            # Threat resurfaces — revert to active visible state
+            t["contained"]             = False
+            t["visible"]               = True
+            t["is_verified"]           = False
+            t["pending_action"]        = None
+            t["mitigation_progress"]   = 0
+            t["steps_since_contained"] = 0
+            t["age"]                   = 0
+            t["stage"]                 = "initial"
+            t["escalated"]             = False
+            t["spread_attempted"]      = False
+            # Each resurface makes the threat harder to fully contain
+            t["resurface_risk"] = round(min(1.0, t["resurface_risk"] + 0.20), 3)
+            t["severity"]       = round(min(1.0, t.get("severity", 0.5) + 0.15), 3)
+            # Immediate health cost — resurfaced threat already did damage during dormancy
+            sess.state["system_health"] = max(0, sess.state["system_health"] - 12)
+
+
+def _compute_ambiguity(t: dict) -> tuple[float, bool]:
+    """Compute (signal_ambiguity_score, contradicting_ioc) for a visible threat.
+
+    signal_ambiguity_score ∈ [0, 1]: fraction of IOC fields that fall into overlap
+    regions shared by two or more attack classes.  High values indicate the agent
+    cannot reliably classify the threat from a single IOC axis and must reason
+    across the full vector — or verify before acting.
+
+    contradicting_ioc: True when the IOC vector simultaneously suggests attack classes
+    with DIFFERENT correct mitigations.  For example, high pps (ddos → patch) combined
+    with high auth failures (phishing/lateral → block_ip) is a genuine contradiction
+    that no threshold classifier can resolve — the agent must use multi-signal inference.
+
+    These fields are exposed in visible_threats so agents can explicitly reason about
+    uncertainty and decide whether to scan/verify before committing a mitigation.
+    """
+    pps  = t.get("packets_per_second",       0)
+    auth = t.get("failed_auth_attempts",     0)
+    ob   = t.get("outbound_data_bytes",      0)
+    lat  = t.get("lateral_connection_count", 0)
+    proc = t.get("unusual_process_count",    0)
+
+    overlap_count = 0
+    # pps: malware(20-300) ∩ ddos(150-4000) at 150-300
+    if 150 <= pps <= 300:
+        overlap_count += 1
+    # pps: phishing(5-100) ∩ malware(20-300) at 20-100
+    elif 20 <= pps <= 100:
+        overlap_count += 1
+    # auth: phishing(30-170) ∩ lateral(15-120) at 30-120
+    if 30 <= auth <= 120:
+        overlap_count += 1
+    # ob: malware(1000-7000) ∩ ransomware(3500-18000) at 3500-7000
+    if 3500 <= ob <= 7000:
+        overlap_count += 1
+    # lat: ransomware(5-24) ∩ lateral(4-22) at 5-22
+    if 5 <= lat <= 22:
+        overlap_count += 1
+    # proc: malware(6-28) ∩ ransomware(10-32) at 10-28
+    if 10 <= proc <= 28:
+        overlap_count += 1
+
+    ambiguity = round(min(1.0, overlap_count / 5), 3)
+
+    # Contradicting signals: the vector simultaneously implicates classes
+    # requiring DIFFERENT correct actions (patch vs block vs isolate).
+    suggests_patch   = pps > 500                        # high pps → ddos → patch
+    suggests_block   = auth > 80 or (15 <= lat <= 80)  # phishing/lateral → block_ip
+    suggests_isolate = (proc >= 10 and ob >= 1000)     # malware/ransomware → isolate
+    contradicting = sum([suggests_patch, suggests_block, suggests_isolate]) >= 2
+
+    return ambiguity, contradicting
 
 
 def _visible_threats(sess: Session) -> list:
@@ -778,6 +1142,13 @@ def _visible_threats(sess: Session) -> list:
     out = []
     for t in sess.state["threats"]:
         if t["visible"] and not t.get("contained"):
+            mp = int(t.get("mitigation_progress", 0))
+            # Kill chain stage name (exposes activity label, NOT attack type)
+            _kc_chain = KILL_CHAIN_STAGES.get(t.get("original_type", t["type"]), [("initial_access", 1.0, {})])
+            _kc_idx   = int(t.get("kill_chain_stage_idx", 0))
+            _kc_stage_name = _kc_chain[min(_kc_idx, len(_kc_chain) - 1)][0]
+            # Ambiguity and contradicting IOC signals
+            _ambiguity, _contradicting = _compute_ambiguity(t)
             out.append({
                 "id":                     str(t.get("id", "unknown")),
                 "node":                   str(t["node"]),
@@ -797,6 +1168,38 @@ def _visible_threats(sess: Session) -> list:
                 "outbound_data_bytes":    int(t.get("outbound_data_bytes", 0)),
                 "lateral_connection_count": int(t.get("lateral_connection_count", 0)),
                 "unusual_process_count":  int(t.get("unusual_process_count", 0)),
+                # ── Sequential decision signals ──────────────────────────────
+                # is_verified: agent called verify_node_X on this threat's node.
+                # Mitigating without verification works but risks double penalty.
+                "is_verified":            bool(t.get("is_verified", False)),
+                # mitigation_in_progress: > 0 means a delayed patch is running.
+                # Sending another mitigation action to this threat is wasted.
+                "mitigation_in_progress": mp > 0,
+                "mitigation_steps_left":  mp,
+                # resurface_risk: visible after re-detection so agents know
+                # which contained threats need monitoring (shown in episode_info).
+                "resurface_risk":         round(float(t.get("resurface_risk", 0.0)), 3),
+                # ── Kill chain signals ───────────────────────────────────────
+                # kill_chain_stage: current named stage in the attack progression.
+                # Exposes WHAT the attack is doing — not the threat type.
+                # Agents must map stage behaviour to threat class via IOC signals.
+                "kill_chain_stage":   _kc_stage_name,
+                "kill_chain_depth":   int(t.get("kill_chain_stage_idx", 0)),
+                # health_drain_multiplier: how much damage this threat deals per step
+                # relative to baseline.  Rises as kill chain advances.
+                # Agents should prioritise high-multiplier threats on critical nodes.
+                "health_drain_multiplier": round(float(t.get("kill_chain_health_multiplier", 1.0)), 2),
+                # ── Partial observability: ambiguity signals ─────────────────
+                # signal_ambiguity_score: fraction of IOC fields in cross-class
+                # overlap regions [0, 1].  High = harder to classify without verify.
+                "signal_ambiguity_score": _ambiguity,
+                # contradicting_ioc: True when IOC fields point to 2+ different
+                # correct mitigations — e.g. high pps (patch) + high auth (block).
+                # Agents should verify before acting on contradicting threats.
+                "contradicting_ioc":      _contradicting,
+                # node_criticality: how important this node is to total system health.
+                # High criticality → act here first when resources are scarce.
+                "node_criticality":   NODE_CRITICALITY.get(t["node"], 0.6),
             })
     return out
 
@@ -814,11 +1217,21 @@ def _obs(sess: Session) -> dict:
     _containment_rate = round(_contained / _total, 4)
     _critical_health = round(sess.state["system_health"] / 100.0, 4)
     _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-    _cost_raw = {"isolate_machine": 0.4, "block_ip": 0.3, "patch": 0.3}
-    _total_spent = sum(_cost_raw.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
+    # Use scaled costs so resources_remaining matches the grader's view.
+    # Scan/verify costs are difficulty-scaled; monitor is flat.
+    _scaled_obs       = get_scaled_costs(_task_budget)
+    _scan_cost_obs    = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
+    _verify_cost_obs  = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
+    def _action_cost_obs(a: str) -> float:
+        if a.startswith("scan"):    return _scan_cost_obs
+        if a.startswith("verify"):  return _verify_cost_obs
+        if a.startswith("monitor"): return _MONITOR_COST
+        return _scaled_obs.get(a, 0.0)
+    _total_spent = sum(_action_cost_obs(a) for a in sess.episode_actions_taken)
     _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
     _resources_remaining = round(max(0.0, 1.0 - _total_spent / _total_budget), 3)
     _speed_bonus = _compute_speed_bonus(sess.containment_events)
+    _fp_penalty_obs = min(1.0, sess.false_positive_actions / max(1, _total))
     return {
         "visible_threats":  _visible_threats(sess),
         "hidden_threat_count": hidden_count,
@@ -838,17 +1251,39 @@ def _obs(sess: Session) -> dict:
             "containment_events": list(sess.containment_events),
             "false_positives_seen": sess.state.get("false_positives_seen", 0),
             "false_positives_acted_on": sess.false_positive_actions,
+            # ── Sequential decision state summary ────────────────────────────
+            # Agents should use these to plan verify/monitor/patch-chain actions.
+            "pending_mitigations": [
+                {"threat_id": t["id"], "action": t["pending_action"],
+                 "steps_left": t["mitigation_progress"]}
+                for t in sess.state["threats"]
+                if t.get("pending_action") and not t.get("contained")
+            ],
+            "resurfaceable_threats": [
+                {"threat_id": t["id"], "node": t["node"],
+                 "resurface_risk": round(t.get("resurface_risk", 0.0), 3),
+                 "steps_since_contained": t.get("steps_since_contained", 0)}
+                for t in sess.state["threats"]
+                if t.get("contained") and t.get("resurface_risk", 0.0) > 0
+            ],
+            "unverified_visible_count": sum(
+                1 for t in sess.state["threats"]
+                if t.get("visible") and not t.get("contained")
+                and not t.get("is_false_positive") and not t.get("is_verified")
+            ),
             "grader_breakdown": {
                 "containment": _containment_rate,
                 "health": _critical_health,
                 "resource": _resources_remaining,
                 "speed": _speed_bonus,
+                "fp_penalty": round(_fp_penalty_obs, 4),
                 "grader_score": grader,
             },
             "network_topology": {
                 # Live graph state — edges are fixed; node_status reflects current compromise/scan state.
                 "nodes": NODES,
                 "edges": {k: sorted(v) for k, v in ADJACENCY.items()},
+                "node_criticality": dict(NODE_CRITICALITY),  # static; agents can use for prioritisation
                 "node_status": {
                     n: (
                         "compromised" if any(
@@ -857,6 +1292,17 @@ def _obs(sess: Session) -> dict:
                             for t in sess.state["threats"]
                         ) else "scanned" if n in sess.state["scanned_nodes"]
                         else "unknown"
+                    )
+                    for n in NODES
+                },
+                # Kill chain depth per node — how far the attack has progressed.
+                # 0 = initial_access, 3+ = critical stage.  -1 = no active threat.
+                "node_kill_chain_depth": {
+                    n: max(
+                        (int(t.get("kill_chain_stage_idx", 0))
+                         for t in sess.state["threats"]
+                         if t["node"] == n and not t.get("contained") and not t.get("is_false_positive")),
+                        default=-1
                     )
                     for n in NODES
                 },
@@ -1159,13 +1605,28 @@ def step(req: StepRequest):
         scan_revealed_real = False       # scan uncovered at least one genuine threat
         scan_revealed_fp   = False       # scan uncovered only false-positive alerts
         scan_node_already_contained = False  # node has only already-contained threats
+        # ── Sequential decision tracking ─────────────────────────────────────
+        verify_found_threat  = False     # verify_node revealed an unverified threat
+        verify_already_done  = False     # verify on a node where threats already verified
+        monitor_reduced_risk = False     # monitor_node reduced a resurface risk
+        monitor_nothing      = False     # monitor on node with no resurfaceable threats
+        unverified_penalty   = False     # mitigation applied to unverified threat
+        patch_queued         = False     # patch action queued (delayed — not instant)
 
         # ── RESOURCE CHECK ──
         # Compute current resources remaining to enforce budget constraints.
-        _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-        _total_spent_now = sum(COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0) for a in sess.episode_actions_taken)
-        _total_budget_now = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
-        _resources_now = max(0.0, 1.0 - _total_spent_now / _total_budget_now)
+        # Scan/verify costs are difficulty-scaled; monitor is flat.
+        _task_budget      = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+        _scan_cost_now    = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
+        _verify_cost_now  = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
+        def _action_cost_step(a: str) -> float:
+            if a.startswith("scan"):    return _scan_cost_now
+            if a.startswith("verify"):  return _verify_cost_now
+            if a.startswith("monitor"): return _MONITOR_COST
+            return COST_RAW.get(a, 0.0)
+        _total_spent_now   = sum(_action_cost_step(a) for a in sess.episode_actions_taken)
+        _total_budget_now  = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
+        _resources_now     = max(0.0, 1.0 - _total_spent_now / _total_budget_now)
         _resource_exhausted = _resources_now <= 0.0
 
         # ── SCAN ──
@@ -1181,6 +1642,18 @@ def step(req: StepRequest):
                     if t["node"] == node and not t["visible"] and not t.get("contained"):
                         if sess.rng.random() > false_neg:
                             t["visible"] = True
+                            # Apply scan-reveal IOC noise: the initial scan gives an imperfect
+                            # snapshot — ±SCAN_IOC_NOISE_FACTOR noise on every numeric IOC.
+                            # Without this, one scan gives a perfect classification signal;
+                            # agents must track IOC evolution over subsequent steps to
+                            # reduce uncertainty and confirm the correct mitigation.
+                            if not t.get("is_false_positive"):
+                                _nf = _SCAN_IOC_NOISE_FACTOR
+                                for _ioc_key in ("packets_per_second", "failed_auth_attempts",
+                                                  "outbound_data_bytes", "lateral_connection_count",
+                                                  "unusual_process_count"):
+                                    _val = t.get(_ioc_key, 0)
+                                    t[_ioc_key] = max(0, int(_val * (1 + sess.rng.uniform(-_nf, _nf))))
                             if t.get("is_false_positive"):
                                 scan_revealed_fp = True
                             else:
@@ -1205,14 +1678,72 @@ def step(req: StepRequest):
                 reason = f"'{node}' is not a valid node. Valid nodes: node_1 through node_5."
                 confidence = 0.10
 
+        # ── VERIFY ──
+        elif raw_action.startswith("verify"):
+            node = raw_action[len("verify_"):] if raw_action.startswith("verify_") else ""
+            if node in NODES:
+                # Mark all unverified visible real threats on this node as verified.
+                # Verify does not reveal hidden threats — use scan for that.
+                found_unverified = False
+                for t in s["threats"]:
+                    if (t["node"] == node and t.get("visible") and not t.get("contained")
+                            and not t.get("is_false_positive") and not t.get("is_verified")):
+                        t["is_verified"] = True
+                        found_unverified = True
+                if found_unverified:
+                    verify_found_threat = True
+                    reason = "Verification complete. Threat confirmed. Safe to mitigate."
+                    confidence = 0.92
+                else:
+                    # Nothing to verify — already verified or no visible threat
+                    verify_already_done = True
+                    reason = "Verification complete. No unverified threats on this node."
+                    confidence = 0.70
+            else:
+                reason = f"'{node}' is not a valid node. Valid nodes: node_1 through node_5."
+                confidence = 0.10
+
+        # ── MONITOR ──
+        elif raw_action.startswith("monitor"):
+            node = raw_action[len("monitor_"):] if raw_action.startswith("monitor_") else ""
+            if node in NODES:
+                # Reduce resurface_risk for contained persistent threats on this node.
+                found_resurfaceable = False
+                for t in s["threats"]:
+                    if t["node"] == node and t.get("contained") and t.get("resurface_risk", 0.0) > 0:
+                        # Each monitor step cuts resurface_risk by 40%, flooring at 0
+                        t["resurface_risk"] = round(max(0.0, t["resurface_risk"] - 0.40), 3)
+                        t["steps_since_contained"] = 0  # reset the resurface clock
+                        found_resurfaceable = True
+                if found_resurfaceable:
+                    monitor_reduced_risk = True
+                    reason = "Monitoring active. Resurface risk reduced."
+                    confidence = 0.88
+                else:
+                    monitor_nothing = True
+                    reason = "Monitoring complete. No persistent threats require attention on this node."
+                    confidence = 0.65
+            else:
+                reason = f"'{node}' is not a valid node. Valid nodes: node_1 through node_5."
+                confidence = 0.10
+
         # ── DEFENSE ──
         else:
             # Pre-roll resource-exhaustion dice unconditionally so the session RNG
             # advances exactly once per defense step, keeping the sequence stable
             # regardless of whether _resource_exhausted is True this step.
             _exhaust_roll = sess.rng.random()
+            # Pre-roll unverified penalty dice (consumed every defense step for RNG determinism)
+            _unverified_roll = sess.rng.random()
+
             for t in s["threats"]:
                 if t["visible"] and not t.get("contained"):
+                    # Skip threats already being mitigated by a queued patch
+                    if t.get("pending_action"):
+                        matched_threat_type = t.get("original_type", t["type"])
+                        reason = "Mitigation already in progress for this threat."
+                        confidence = 0.50
+                        break
                     # Use original_type for MITRE lookup — type is preserved even after
                     # stage escalation so agents are never penalized for correct identification.
                     correct = _get_correct_action(t.get("original_type", t["type"]), t.get("severity", 0.5), t.get("stage", "initial"))
@@ -1229,52 +1760,97 @@ def step(req: StepRequest):
                             matched = False  # action attempted but resource-starved response failed
                             reason = "Action failed. Resource budget depleted."
                             confidence = 0.30
+                        elif not t.get("is_verified") and _unverified_roll < 0.50:
+                            # Unverified threat: 50% chance the action fails — agents should
+                            # verify first to confirm the threat type before committing a
+                            # costly mitigation.  Correct action but wrong target classification
+                            # risk drives this failure, not resource exhaustion.
+                            matched_threat_type = t.get("original_type", t["type"])
+                            matched = False
+                            unverified_penalty = True
+                            reason = "Action failed. Threat was not verified. Use verify_node_X first."
+                            confidence = 0.25
                         else:
-                            t["contained"] = True
-                            matched_threat_type = t["type"]
+                            # ── Successful mitigation ────────────────────────────────────
+                            delay = _MITIGATION_DELAY.get(raw_action, 0)
+                            matched_threat_type = t.get("original_type", t["type"])
                             matched = True
                             early_bonus = t["age"] < 3
-                            sess.containment_events.append({
-                                "threat_id": t["id"],
-                                "age_at_containment": t["age"],
-                                "threat_type": t.get("original_type", t["type"]),
-                            })
+                            if delay > 0:
+                                # Delayed mitigation (patch): mark in-progress, don't contain yet
+                                t["pending_action"]      = raw_action
+                                t["mitigation_progress"] = delay
+                                patch_queued = True
+                                reason = (f"Patch deployment started. Completes in {delay} step(s). "
+                                          "Threat remains active during deployment.")
+                                confidence = 0.80
+                            else:
+                                # Instant mitigation (block_ip, isolate_machine)
+                                t["contained"] = True
+                                sess.containment_events.append({
+                                    "threat_id":          t["id"],
+                                    "age_at_containment": t["age"],
+                                    "threat_type":        t.get("original_type", t["type"]),
+                                })
                         break
 
             if not matched:
                 for t in s["threats"]:
                     if t["visible"] and not t.get("contained"):
-                        matched_threat_type = t["type"]
+                        matched_threat_type = t.get("original_type", t.get("type"))
                         break
                 if raw_action == "ignore":
                     s["system_health"] = max(0, s["system_health"] - 10)
-                else:
+                elif not unverified_penalty and not patch_queued:
                     s["system_health"] = max(0, s["system_health"] - 5)
 
-            reason, confidence = _build_reason(raw_action, matched, matched_threat_type, early_bonus)
+            if not reason:
+                reason, confidence = _build_reason(raw_action, matched, matched_threat_type, early_bonus)
 
-        # Passive health degradation — only real threats (not false positives) cause damage.
-        # FPs are phantom alerts and must not inflate the active-threat count.
+        # Criticality-amplified, kill-chain-weighted health degradation.
+        # Each active real threat contributes damage proportional to:
+        #   degrade_rate × node_criticality × kill_chain_health_multiplier × 20
+        # (×20 normalises across 5 nodes so base damage matches the old uniform formula
+        #  when criticality=0.6 and multiplier=1.0 ≈ 0.6×20=12 HP per 5 threats).
+        # This forces agents to prioritise high-criticality hub nodes and act early —
+        # ransomware at "encryption" stage on node_2 deals 4× normal damage per step.
         _degrade_rate = sess.task_config.get("health_degradation_rate", 0.0)
         if _degrade_rate > 0:
-            _active = sum(1 for t in s["threats"] if not t.get("contained") and not t.get("is_false_positive"))
-            s["system_health"] = max(0, s["system_health"] - _degrade_rate * (_active / TOTAL_NODES) * 100)
+            _health_loss = 0.0
+            for _t in s["threats"]:
+                if not _t.get("contained") and not _t.get("is_false_positive"):
+                    _node_crit = NODE_CRITICALITY.get(_t.get("node", "node_1"), 0.6)
+                    _kc_mult   = float(_t.get("kill_chain_health_multiplier", 1.0))
+                    _health_loss += _degrade_rate * _node_crit * _kc_mult * 20
+            s["system_health"] = max(0, s["system_health"] - _health_loss)
 
         _age_threats(sess)
         _update_visibility(sess)
         _clamp_health(sess)
 
-        # Reward authority: MITRE-aligned lookup table.
-        # Mitigation actions normalized via _clamp_reward((r + 2.0) / 4.0) → [0.0, 1.0]:
-        #   correct:      raw 1.0 (+0.1 early bonus if age<3) → 0.750 (0.775)
-        #   wrong:        raw -0.5                            → 0.375
-        #   ignore:       raw -1.5                            → 0.125
-        # Scan rewards are direct (not normalized) to create genuine cost for wasted scans:
-        #   real threat revealed                              → +0.25
-        #   false positive revealed                          → -0.05
-        #   clean node (nothing found)                       → -0.10
-        #   already-contained node (threat dealt with)       → -0.20
-        #   scan while resources exhausted                   → -0.30
+        # Reward authority: MITRE-aligned lookup table extended for sequential chain.
+        #
+        # Scan (direct, not normalized — genuine cost for wasted scans):
+        #   real threat revealed               → +0.25
+        #   false positive revealed            → -0.05
+        #   clean node                         → -0.10
+        #   already-contained node             → -0.20
+        #   scan while resources exhausted     → -0.30
+        #
+        # Verify (direct — rewards disciplined confirmation before acting):
+        #   unverified threat confirmed        → +0.15
+        #   nothing new to verify              → -0.08  (wasted step)
+        #
+        # Monitor (direct — rewards post-containment vigilance):
+        #   resurface risk reduced             → +0.10
+        #   nothing resurfaceable              → -0.08  (wasted step)
+        #
+        # Mitigation (normalized via _clamp_reward((r + 2.0) / 4.0) → (0, 1)):
+        #   correct + verified + instant       → raw 1.1 (early) / 1.0  → 0.775 / 0.750
+        #   correct + verified + patch queued  → raw 0.80              → 0.700  (delay accepted)
+        #   correct + unverified (50% fail)    → raw -0.70             → 0.325  (double penalty)
+        #   wrong action                       → raw -0.50             → 0.375
+        #   ignore                             → raw -1.50             → 0.125
         if raw_action.startswith("scan"):
             if _resource_exhausted:
                 reward = -0.30
@@ -1286,15 +1862,36 @@ def step(req: StepRequest):
                 reward = -0.20
             else:
                 reward = -0.10  # clean node, nothing to find
+
+        elif raw_action.startswith("verify"):
+            if verify_found_threat:
+                reward = +0.15
+            else:
+                reward = -0.08  # wasted — already verified or no visible threat
+
+        elif raw_action.startswith("monitor"):
+            if monitor_reduced_risk:
+                reward = +0.10
+            else:
+                reward = -0.08  # wasted — nothing resurfaceable here
+
         elif raw_action == "ignore":
             reward = _clamp_reward(-1.5)
+
         elif raw_action in ("block_ip", "isolate_machine", "patch"):
-            if matched:
+            if matched and patch_queued:
+                # Delayed mitigation accepted: moderate reward — agent must follow through
+                reward = _clamp_reward(0.80)
+            elif matched:
+                # Instant containment: full reward with early-act bonus
                 reward = _clamp_reward(1.1 if early_bonus else 1.0)
+            elif unverified_penalty:
+                # Correct action on unverified threat that failed the 50% roll
+                reward = _clamp_reward(-0.70)
             else:
-                reward = _clamp_reward(-0.5)
+                reward = _clamp_reward(-0.50)
         else:
-            reward = _clamp_reward(-0.5)
+            reward = _clamp_reward(-0.50)
 
         # Running average score — clamped to strict (0, 1) via safe_score
         _all_rewards = sess.episode_rewards + [reward]

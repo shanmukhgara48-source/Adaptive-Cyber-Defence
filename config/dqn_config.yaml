@@ -1,0 +1,58 @@
+# DQN agent configuration
+#
+# State vector: EnvironmentState.to_vector()
+#   8 nodes × 6 features + 6 global scalars = 54 dimensions
+#   Node IDs (sorted): db-01, fw-01, router-01, srv-db, srv-web, ws-01, ws-02, ws-03
+#   Per-node: is_compromised, is_isolated, health, patch_level, criticality, vulnerability
+#   Global:   threat_severity, network_load, resource_availability,
+#             detection_confidence, time_step/100, episode_score
+#
+# Action space (index → Action enum):
+#   0 → BLOCK_IP        1 → ISOLATE_NODE    2 → PATCH_SYSTEM
+#   3 → RUN_DEEP_SCAN   4 → IGNORE
+
+state:
+  dim: 54
+  per_node_features:
+    - is_compromised
+    - is_isolated
+    - health
+    - patch_level
+    - criticality
+    - vulnerability
+  global_features:
+    - threat_severity
+    - network_load
+    - resource_availability
+    - detection_confidence
+    - time_step_norm        # time_step / 100
+    - episode_score
+
+actions:
+  n_actions: 5
+  mapping:
+    0: BLOCK_IP
+    1: ISOLATE_NODE
+    2: PATCH_SYSTEM
+    3: RUN_DEEP_SCAN
+    4: IGNORE
+
+dqn:
+  hidden_sizes: [128, 128]
+  lr: 0.001
+  gamma: 0.95
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_episodes: 150   # linear decay from start→end over this many episodes
+  batch_size: 64
+  buffer_capacity: 10000
+  target_update_freq: 20        # episodes between target network weight syncs
+  min_buffer_steps: 256         # minimum replay buffer steps before first gradient update
+
+training:
+  task: easy
+  n_episodes: 200
+  seed: 42
+  max_steps_per_episode: 200
+  save_path: agents/dqn_weights.json
+  log_every: 10

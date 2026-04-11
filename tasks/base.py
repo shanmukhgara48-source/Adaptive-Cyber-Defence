@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from grader import TASK_PASSING_SCORES
+from grader import TASK_PASSING_SCORES, compute_grader_score, compute_speed_bonus
 
 if TYPE_CHECKING:
     from ..env import AdaptiveCyberDefenseEnv
@@ -182,6 +182,7 @@ class BaseTask:
         breakdowns: list[dict] = []
         resource_leftovers: list[float] = []
         threats_seen: set[str] = set()
+        containment_events: list[dict] = []   # for speed_bonus — mirrors HTTP path
         terminal_reason = "max_steps"
 
         for t in state.active_threats:
@@ -189,6 +190,10 @@ class BaseTask:
 
         done = False
         while not done:
+            # Snapshot active threat ids + ages before the step so we can detect
+            # newly contained threats and record age_at_containment for speed_bonus.
+            prev_active = {t.id: t.age for t in state.active_threats}
+
             action = agent.choose(state)
             state, reward, done, info = env.step(action)
 
@@ -196,6 +201,12 @@ class BaseTask:
             if "reward_breakdown" in info:
                 breakdowns.append(info["reward_breakdown"])
             resource_leftovers.append(info.get("resource_utilisation", 0.0))
+
+            # Detect threats that disappeared (contained) this step
+            current_ids = {t.id for t in state.active_threats}
+            for tid, age in prev_active.items():
+                if tid not in current_ids:
+                    containment_events.append({"threat_id": tid, "age_at_containment": age})
 
             # Track all threat IDs seen (including lateral movement children)
             for t in state.active_threats:
@@ -236,7 +247,7 @@ class BaseTask:
             containment_rate=containment_rate,
             critical_health=critical_health,
             avg_resource_left=avg_resource_left,
-            step_rewards=step_rewards,
+            containment_events=containment_events,
         )
 
         return TaskResult(
@@ -261,22 +272,25 @@ class BaseTask:
         containment_rate: float,
         critical_health: float,
         avg_resource_left: float,
-        step_rewards: list[float],
+        containment_events: list[dict],
     ) -> float:
-        """
-        Weighted episode score [0.0, 1.0].
+        """Authoritative episode score via the shared grader formula.
 
-        Weights:
-          0.50 × containment_rate  — primary objective
-          0.20 × critical_health   — asset preservation
-          0.15 × avg_resource_left — efficiency
-          0.15 × avg_step_reward   — quality of play each step
+        Delegates to grader.compute_grader_score() so the OOP path produces
+        identical scores to the HTTP evaluation path — eliminating the dual
+        reward divergence identified in the research audit.
+
+        The previous inline formula used avg_step_reward as the 4th term,
+        which diverged from the HTTP grader's speed_bonus component and made
+        OOP-path scores incomparable with benchmark results.
+
+        fp_penalty is not passed here because the OOP path does not have a
+        session-level false_positive_actions counter; it defaults to 0.0.
         """
-        avg_reward = sum(step_rewards) / len(step_rewards) if step_rewards else 0.0
-        score = (
-            0.50 * containment_rate
-            + 0.20 * critical_health
-            + 0.15 * avg_resource_left
-            + 0.15 * avg_reward
+        speed_bonus = compute_speed_bonus(containment_events)
+        return compute_grader_score(
+            containment_rate=containment_rate,
+            critical_health=critical_health,
+            resource_efficiency=avg_resource_left,
+            speed_bonus=speed_bonus,
         )
-        return max(0.0, min(1.0, score))

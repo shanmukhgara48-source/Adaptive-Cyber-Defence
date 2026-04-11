@@ -1,0 +1,895 @@
+{
+  "task": "hard",
+  "n_episodes": 50,
+  "base_seed": 42,
+  "health_status": "HEALTHY",
+  "health_detail": "mean step-reward=0.2626 is well above survival baseline (0.10). Reward signal is useful.",
+  "step_reward": {
+    "grand_mean": 0.2626,
+    "grand_std": 0.0598,
+    "ep_min_mean": 0.1619,
+    "ep_max_mean": 0.415
+  },
+  "episode_scores": {
+    "mean": 0.1054,
+    "max": 0.2191
+  },
+  "epsilon": {
+    "initial": 0.9937,
+    "final": 0.6833,
+    "decay_mode": "linear",
+    "decay_episodes": 150
+  },
+  "action_pct": {
+    "RUN_DEEP_SCAN": 21.8,
+    "IGNORE": 21.0,
+    "BLOCK_IP": 20.4,
+    "PATCH_SYSTEM": 19.4,
+    "ISOLATE_NODE": 17.4
+  },
+  "first_positive_ep": 1,
+  "episodes": [
+    {
+      "episode": 1,
+      "epsilon": 0.9937,
+      "n_steps": 8,
+      "step_rew_mean": 0.2686,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.4582,
+      "step_rew_std": 0.0972,
+      "episode_score": 0.0716,
+      "last_loss": null,
+      "actions": {
+        "RUN_DEEP_SCAN": 3,
+        "PATCH_SYSTEM": 2,
+        "ISOLATE_NODE": 2,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 2,
+      "epsilon": 0.9873,
+      "n_steps": 5,
+      "step_rew_mean": 0.3206,
+      "step_rew_min": 0.1433,
+      "step_rew_max": 0.4864,
+      "step_rew_std": 0.1162,
+      "episode_score": 0.0534,
+      "last_loss": null,
+      "actions": {
+        "PATCH_SYSTEM": 2,
+        "IGNORE": 1,
+        "BLOCK_IP": 1,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 3,
+      "epsilon": 0.981,
+      "n_steps": 8,
+      "step_rew_mean": 0.2816,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.4207,
+      "step_rew_std": 0.0936,
+      "episode_score": 0.0751,
+      "last_loss": null,
+      "actions": {
+        "RUN_DEEP_SCAN": 2,
+        "BLOCK_IP": 3,
+        "IGNORE": 1,
+        "PATCH_SYSTEM": 1,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 4,
+      "epsilon": 0.9747,
+      "n_steps": 8,
+      "step_rew_mean": 0.289,
+      "step_rew_min": 0.1519,
+      "step_rew_max": 0.5154,
+      "step_rew_std": 0.1157,
+      "episode_score": 0.0771,
+      "last_loss": null,
+      "actions": {
+        "IGNORE": 2,
+        "BLOCK_IP": 2,
+        "PATCH_SYSTEM": 3,
+        "RUN_DEEP_SCAN": 1
+      }
+    },
+    {
+      "episode": 5,
+      "epsilon": 0.9683,
+      "n_steps": 8,
+      "step_rew_mean": 0.2849,
+      "step_rew_min": 0.2045,
+      "step_rew_max": 0.4177,
+      "step_rew_std": 0.0684,
+      "episode_score": 0.076,
+      "last_loss": null,
+      "actions": {
+        "ISOLATE_NODE": 3,
+        "IGNORE": 1,
+        "RUN_DEEP_SCAN": 3,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 6,
+      "epsilon": 0.962,
+      "n_steps": 9,
+      "step_rew_mean": 0.2809,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.4552,
+      "step_rew_std": 0.0997,
+      "episode_score": 0.0843,
+      "last_loss": null,
+      "actions": {
+        "RUN_DEEP_SCAN": 4,
+        "BLOCK_IP": 2,
+        "PATCH_SYSTEM": 2,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 7,
+      "epsilon": 0.9557,
+      "n_steps": 6,
+      "step_rew_mean": 0.299,
+      "step_rew_min": 0.1867,
+      "step_rew_max": 0.4707,
+      "step_rew_std": 0.094,
+      "episode_score": 0.0598,
+      "last_loss": null,
+      "actions": {
+        "IGNORE": 2,
+        "ISOLATE_NODE": 3,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 8,
+      "epsilon": 0.9493,
+      "n_steps": 23,
+      "step_rew_mean": 0.1619,
+      "step_rew_min": 0.0,
+      "step_rew_max": 0.2639,
+      "step_rew_std": 0.0695,
+      "episode_score": 0.1241,
+      "last_loss": null,
+      "actions": {
+        "PATCH_SYSTEM": 5,
+        "RUN_DEEP_SCAN": 6,
+        "IGNORE": 3,
+        "BLOCK_IP": 6,
+        "ISOLATE_NODE": 3
+      }
+    },
+    {
+      "episode": 9,
+      "epsilon": 0.943,
+      "n_steps": 11,
+      "step_rew_mean": 0.2507,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.4707,
+      "step_rew_std": 0.1005,
+      "episode_score": 0.0919,
+      "last_loss": null,
+      "actions": {
+        "ISOLATE_NODE": 2,
+        "PATCH_SYSTEM": 4,
+        "BLOCK_IP": 3,
+        "RUN_DEEP_SCAN": 2
+      }
+    },
+    {
+      "episode": 10,
+      "epsilon": 0.9367,
+      "n_steps": 18,
+      "step_rew_mean": 0.208,
+      "step_rew_min": 0.0172,
+      "step_rew_max": 0.3752,
+      "step_rew_std": 0.0721,
+      "episode_score": 0.1248,
+      "last_loss": null,
+      "actions": {
+        "BLOCK_IP": 5,
+        "PATCH_SYSTEM": 5,
+        "IGNORE": 5,
+        "ISOLATE_NODE": 3
+      }
+    },
+    {
+      "episode": 11,
+      "epsilon": 0.9303,
+      "n_steps": 5,
+      "step_rew_mean": 0.3283,
+      "step_rew_min": 0.2017,
+      "step_rew_max": 0.5592,
+      "step_rew_std": 0.1257,
+      "episode_score": 0.0547,
+      "last_loss": null,
+      "actions": {
+        "BLOCK_IP": 2,
+        "ISOLATE_NODE": 2,
+        "RUN_DEEP_SCAN": 1
+      }
+    },
+    {
+      "episode": 12,
+      "epsilon": 0.924,
+      "n_steps": 3,
+      "step_rew_mean": 0.3955,
+      "step_rew_min": 0.341,
+      "step_rew_max": 0.4337,
+      "step_rew_std": 0.0396,
+      "episode_score": 0.0395,
+      "last_loss": null,
+      "actions": {
+        "ISOLATE_NODE": 2,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 13,
+      "epsilon": 0.9177,
+      "n_steps": 8,
+      "step_rew_mean": 0.2679,
+      "step_rew_min": 0.1505,
+      "step_rew_max": 0.4833,
+      "step_rew_std": 0.1006,
+      "episode_score": 0.0714,
+      "last_loss": null,
+      "actions": {
+        "IGNORE": 3,
+        "ISOLATE_NODE": 3,
+        "PATCH_SYSTEM": 2
+      }
+    },
+    {
+      "episode": 14,
+      "epsilon": 0.9113,
+      "n_steps": 8,
+      "step_rew_mean": 0.2453,
+      "step_rew_min": 0.1138,
+      "step_rew_max": 0.502,
+      "step_rew_std": 0.1136,
+      "episode_score": 0.0654,
+      "last_loss": null,
+      "actions": {
+        "PATCH_SYSTEM": 3,
+        "IGNORE": 2,
+        "ISOLATE_NODE": 3
+      }
+    },
+    {
+      "episode": 15,
+      "epsilon": 0.905,
+      "n_steps": 3,
+      "step_rew_mean": 0.4142,
+      "step_rew_min": 0.3505,
+      "step_rew_max": 0.5188,
+      "step_rew_std": 0.0745,
+      "episode_score": 0.0414,
+      "last_loss": null,
+      "actions": {
+        "PATCH_SYSTEM": 1,
+        "ISOLATE_NODE": 1,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 16,
+      "epsilon": 0.8987,
+      "n_steps": 19,
+      "step_rew_mean": 0.2049,
+      "step_rew_min": 0.0122,
+      "step_rew_max": 0.4317,
+      "step_rew_std": 0.0895,
+      "episode_score": 0.1298,
+      "last_loss": null,
+      "actions": {
+        "IGNORE": 2,
+        "ISOLATE_NODE": 5,
+        "PATCH_SYSTEM": 6,
+        "BLOCK_IP": 5,
+        "RUN_DEEP_SCAN": 1
+      }
+    },
+    {
+      "episode": 17,
+      "epsilon": 0.8923,
+      "n_steps": 23,
+      "step_rew_mean": 0.2097,
+      "step_rew_min": 0.0,
+      "step_rew_max": 0.3733,
+      "step_rew_std": 0.0707,
+      "episode_score": 0.1608,
+      "last_loss": null,
+      "actions": {
+        "PATCH_SYSTEM": 7,
+        "IGNORE": 6,
+        "BLOCK_IP": 3,
+        "RUN_DEEP_SCAN": 4,
+        "ISOLATE_NODE": 3
+      }
+    },
+    {
+      "episode": 18,
+      "epsilon": 0.886,
+      "n_steps": 13,
+      "step_rew_mean": 0.253,
+      "step_rew_min": 0.1507,
+      "step_rew_max": 0.5215,
+      "step_rew_std": 0.1016,
+      "episode_score": 0.1096,
+      "last_loss": null,
+      "actions": {
+        "ISOLATE_NODE": 2,
+        "IGNORE": 2,
+        "BLOCK_IP": 5,
+        "RUN_DEEP_SCAN": 2,
+        "PATCH_SYSTEM": 2
+      }
+    },
+    {
+      "episode": 19,
+      "epsilon": 0.8797,
+      "n_steps": 7,
+      "step_rew_mean": 0.2916,
+      "step_rew_min": 0.225,
+      "step_rew_max": 0.4082,
+      "step_rew_std": 0.0693,
+      "episode_score": 0.068,
+      "last_loss": null,
+      "actions": {
+        "PATCH_SYSTEM": 1,
+        "IGNORE": 3,
+        "ISOLATE_NODE": 2,
+        "RUN_DEEP_SCAN": 1
+      }
+    },
+    {
+      "episode": 20,
+      "epsilon": 0.8733,
+      "n_steps": 23,
+      "step_rew_mean": 0.2181,
+      "step_rew_min": 0.0688,
+      "step_rew_max": 0.4317,
+      "step_rew_std": 0.0776,
+      "episode_score": 0.1672,
+      "last_loss": null,
+      "actions": {
+        "IGNORE": 6,
+        "PATCH_SYSTEM": 7,
+        "BLOCK_IP": 4,
+        "RUN_DEEP_SCAN": 3,
+        "ISOLATE_NODE": 3
+      }
+    },
+    {
+      "episode": 21,
+      "epsilon": 0.867,
+      "n_steps": 30,
+      "step_rew_mean": 0.1993,
+      "step_rew_min": 0.0262,
+      "step_rew_max": 0.3733,
+      "step_rew_std": 0.0636,
+      "episode_score": 0.1993,
+      "last_loss": null,
+      "actions": {
+        "RUN_DEEP_SCAN": 11,
+        "PATCH_SYSTEM": 7,
+        "ISOLATE_NODE": 2,
+        "BLOCK_IP": 5,
+        "IGNORE": 5
+      }
+    },
+    {
+      "episode": 22,
+      "epsilon": 0.8607,
+      "n_steps": 20,
+      "step_rew_mean": 0.2035,
+      "step_rew_min": 0.0059,
+      "step_rew_max": 0.2679,
+      "step_rew_std": 0.0677,
+      "episode_score": 0.1357,
+      "last_loss": 0.161949,
+      "actions": {
+        "IGNORE": 9,
+        "RUN_DEEP_SCAN": 6,
+        "BLOCK_IP": 3,
+        "ISOLATE_NODE": 1,
+        "PATCH_SYSTEM": 1
+      }
+    },
+    {
+      "episode": 23,
+      "epsilon": 0.8543,
+      "n_steps": 30,
+      "step_rew_mean": 0.1995,
+      "step_rew_min": 0.0,
+      "step_rew_max": 0.4117,
+      "step_rew_std": 0.0736,
+      "episode_score": 0.1995,
+      "last_loss": 0.078493,
+      "actions": {
+        "IGNORE": 5,
+        "RUN_DEEP_SCAN": 9,
+        "BLOCK_IP": 10,
+        "ISOLATE_NODE": 2,
+        "PATCH_SYSTEM": 4
+      }
+    },
+    {
+      "episode": 24,
+      "epsilon": 0.848,
+      "n_steps": 10,
+      "step_rew_mean": 0.2529,
+      "step_rew_min": 0.1733,
+      "step_rew_max": 0.4144,
+      "step_rew_std": 0.0703,
+      "episode_score": 0.0843,
+      "last_loss": 0.034422,
+      "actions": {
+        "IGNORE": 1,
+        "RUN_DEEP_SCAN": 2,
+        "PATCH_SYSTEM": 3,
+        "ISOLATE_NODE": 2,
+        "BLOCK_IP": 2
+      }
+    },
+    {
+      "episode": 25,
+      "epsilon": 0.8417,
+      "n_steps": 4,
+      "step_rew_mean": 0.3521,
+      "step_rew_min": 0.2045,
+      "step_rew_max": 0.4769,
+      "step_rew_std": 0.097,
+      "episode_score": 0.0469,
+      "last_loss": 0.036776,
+      "actions": {
+        "ISOLATE_NODE": 2,
+        "PATCH_SYSTEM": 1,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 26,
+      "epsilon": 0.8353,
+      "n_steps": 10,
+      "step_rew_mean": 0.2639,
+      "step_rew_min": 0.1662,
+      "step_rew_max": 0.3933,
+      "step_rew_std": 0.0689,
+      "episode_score": 0.088,
+      "last_loss": 0.051547,
+      "actions": {
+        "IGNORE": 1,
+        "ISOLATE_NODE": 1,
+        "BLOCK_IP": 2,
+        "RUN_DEEP_SCAN": 3,
+        "PATCH_SYSTEM": 3
+      }
+    },
+    {
+      "episode": 27,
+      "epsilon": 0.829,
+      "n_steps": 5,
+      "step_rew_mean": 0.3239,
+      "step_rew_min": 0.1483,
+      "step_rew_max": 0.5654,
+      "step_rew_std": 0.1404,
+      "episode_score": 0.054,
+      "last_loss": 0.03083,
+      "actions": {
+        "RUN_DEEP_SCAN": 1,
+        "ISOLATE_NODE": 1,
+        "PATCH_SYSTEM": 2,
+        "BLOCK_IP": 1
+      }
+    },
+    {
+      "episode": 28,
+      "epsilon": 0.8227,
+      "n_steps": 3,
+      "step_rew_mean": 0.415,
+      "step_rew_min": 0.4033,
+      "step_rew_max": 0.4372,
+      "step_rew_std": 0.0157,
+      "episode_score": 0.0415,
+      "last_loss": 0.05725,
+      "actions": {
+        "BLOCK_IP": 2,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 29,
+      "epsilon": 0.8163,
+      "n_steps": 8,
+      "step_rew_mean": 0.27,
+      "step_rew_min": 0.1533,
+      "step_rew_max": 0.4614,
+      "step_rew_std": 0.0981,
+      "episode_score": 0.072,
+      "last_loss": 0.071758,
+      "actions": {
+        "PATCH_SYSTEM": 1,
+        "RUN_DEEP_SCAN": 1,
+        "IGNORE": 2,
+        "ISOLATE_NODE": 2,
+        "BLOCK_IP": 2
+      }
+    },
+    {
+      "episode": 30,
+      "epsilon": 0.81,
+      "n_steps": 13,
+      "step_rew_mean": 0.2441,
+      "step_rew_min": 0.1493,
+      "step_rew_max": 0.3808,
+      "step_rew_std": 0.078,
+      "episode_score": 0.1058,
+      "last_loss": 0.01589,
+      "actions": {
+        "PATCH_SYSTEM": 5,
+        "RUN_DEEP_SCAN": 3,
+        "ISOLATE_NODE": 1,
+        "BLOCK_IP": 2,
+        "IGNORE": 2
+      }
+    },
+    {
+      "episode": 31,
+      "epsilon": 0.8037,
+      "n_steps": 25,
+      "step_rew_mean": 0.1663,
+      "step_rew_min": 0.0,
+      "step_rew_max": 0.395,
+      "step_rew_std": 0.0982,
+      "episode_score": 0.1386,
+      "last_loss": 0.033878,
+      "actions": {
+        "IGNORE": 3,
+        "BLOCK_IP": 4,
+        "ISOLATE_NODE": 6,
+        "PATCH_SYSTEM": 4,
+        "RUN_DEEP_SCAN": 8
+      }
+    },
+    {
+      "episode": 32,
+      "epsilon": 0.7973,
+      "n_steps": 11,
+      "step_rew_mean": 0.2627,
+      "step_rew_min": 0.1483,
+      "step_rew_max": 0.4117,
+      "step_rew_std": 0.0703,
+      "episode_score": 0.0963,
+      "last_loss": 0.029544,
+      "actions": {
+        "BLOCK_IP": 2,
+        "IGNORE": 3,
+        "PATCH_SYSTEM": 2,
+        "RUN_DEEP_SCAN": 3,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 33,
+      "epsilon": 0.791,
+      "n_steps": 9,
+      "step_rew_mean": 0.2611,
+      "step_rew_min": 0.1533,
+      "step_rew_max": 0.4177,
+      "step_rew_std": 0.0761,
+      "episode_score": 0.0783,
+      "last_loss": 0.043196,
+      "actions": {
+        "IGNORE": 1,
+        "PATCH_SYSTEM": 2,
+        "ISOLATE_NODE": 3,
+        "RUN_DEEP_SCAN": 3
+      }
+    },
+    {
+      "episode": 34,
+      "epsilon": 0.7847,
+      "n_steps": 30,
+      "step_rew_mean": 0.2191,
+      "step_rew_min": 0.0883,
+      "step_rew_max": 0.2593,
+      "step_rew_std": 0.0385,
+      "episode_score": 0.2191,
+      "last_loss": 0.040965,
+      "actions": {
+        "IGNORE": 15,
+        "RUN_DEEP_SCAN": 4,
+        "ISOLATE_NODE": 3,
+        "BLOCK_IP": 4,
+        "PATCH_SYSTEM": 4
+      }
+    },
+    {
+      "episode": 35,
+      "epsilon": 0.7783,
+      "n_steps": 30,
+      "step_rew_mean": 0.21,
+      "step_rew_min": 0.0967,
+      "step_rew_max": 0.25,
+      "step_rew_std": 0.0427,
+      "episode_score": 0.21,
+      "last_loss": 0.042675,
+      "actions": {
+        "ISOLATE_NODE": 4,
+        "RUN_DEEP_SCAN": 11,
+        "IGNORE": 7,
+        "BLOCK_IP": 6,
+        "PATCH_SYSTEM": 2
+      }
+    },
+    {
+      "episode": 36,
+      "epsilon": 0.772,
+      "n_steps": 23,
+      "step_rew_mean": 0.1887,
+      "step_rew_min": 0.0311,
+      "step_rew_max": 0.3385,
+      "step_rew_std": 0.0636,
+      "episode_score": 0.1447,
+      "last_loss": 0.023087,
+      "actions": {
+        "IGNORE": 4,
+        "RUN_DEEP_SCAN": 7,
+        "PATCH_SYSTEM": 4,
+        "ISOLATE_NODE": 4,
+        "BLOCK_IP": 4
+      }
+    },
+    {
+      "episode": 37,
+      "epsilon": 0.7657,
+      "n_steps": 9,
+      "step_rew_mean": 0.255,
+      "step_rew_min": 0.0748,
+      "step_rew_max": 0.5336,
+      "step_rew_std": 0.1374,
+      "episode_score": 0.0765,
+      "last_loss": 0.035467,
+      "actions": {
+        "BLOCK_IP": 1,
+        "PATCH_SYSTEM": 4,
+        "IGNORE": 2,
+        "ISOLATE_NODE": 2
+      }
+    },
+    {
+      "episode": 38,
+      "epsilon": 0.7593,
+      "n_steps": 5,
+      "step_rew_mean": 0.3242,
+      "step_rew_min": 0.2357,
+      "step_rew_max": 0.5052,
+      "step_rew_std": 0.0988,
+      "episode_score": 0.054,
+      "last_loss": 0.01376,
+      "actions": {
+        "IGNORE": 2,
+        "ISOLATE_NODE": 3
+      }
+    },
+    {
+      "episode": 39,
+      "epsilon": 0.753,
+      "n_steps": 16,
+      "step_rew_mean": 0.2322,
+      "step_rew_min": 0.0755,
+      "step_rew_max": 0.3588,
+      "step_rew_std": 0.0724,
+      "episode_score": 0.1238,
+      "last_loss": 0.021984,
+      "actions": {
+        "ISOLATE_NODE": 3,
+        "RUN_DEEP_SCAN": 2,
+        "IGNORE": 6,
+        "BLOCK_IP": 4,
+        "PATCH_SYSTEM": 1
+      }
+    },
+    {
+      "episode": 40,
+      "epsilon": 0.7467,
+      "n_steps": 9,
+      "step_rew_mean": 0.2434,
+      "step_rew_min": 0.1433,
+      "step_rew_max": 0.4082,
+      "step_rew_std": 0.0853,
+      "episode_score": 0.073,
+      "last_loss": 0.033326,
+      "actions": {
+        "ISOLATE_NODE": 3,
+        "PATCH_SYSTEM": 2,
+        "IGNORE": 2,
+        "BLOCK_IP": 1,
+        "RUN_DEEP_SCAN": 1
+      }
+    },
+    {
+      "episode": 41,
+      "epsilon": 0.7403,
+      "n_steps": 3,
+      "step_rew_mean": 0.4025,
+      "step_rew_min": 0.3902,
+      "step_rew_max": 0.4117,
+      "step_rew_std": 0.009,
+      "episode_score": 0.0402,
+      "last_loss": 0.050354,
+      "actions": {
+        "BLOCK_IP": 2,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 42,
+      "epsilon": 0.734,
+      "n_steps": 6,
+      "step_rew_mean": 0.304,
+      "step_rew_min": 0.1662,
+      "step_rew_max": 0.4644,
+      "step_rew_std": 0.1008,
+      "episode_score": 0.0608,
+      "last_loss": 0.045653,
+      "actions": {
+        "PATCH_SYSTEM": 3,
+        "RUN_DEEP_SCAN": 2,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 43,
+      "epsilon": 0.7277,
+      "n_steps": 13,
+      "step_rew_mean": 0.2517,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.3807,
+      "step_rew_std": 0.066,
+      "episode_score": 0.1091,
+      "last_loss": 0.022019,
+      "actions": {
+        "ISOLATE_NODE": 3,
+        "RUN_DEEP_SCAN": 4,
+        "PATCH_SYSTEM": 2,
+        "BLOCK_IP": 2,
+        "IGNORE": 2
+      }
+    },
+    {
+      "episode": 44,
+      "epsilon": 0.7213,
+      "n_steps": 24,
+      "step_rew_mean": 0.2042,
+      "step_rew_min": 0.0,
+      "step_rew_max": 0.3523,
+      "step_rew_std": 0.0662,
+      "episode_score": 0.1634,
+      "last_loss": 0.031445,
+      "actions": {
+        "ISOLATE_NODE": 3,
+        "PATCH_SYSTEM": 5,
+        "BLOCK_IP": 5,
+        "IGNORE": 7,
+        "RUN_DEEP_SCAN": 4
+      }
+    },
+    {
+      "episode": 45,
+      "epsilon": 0.715,
+      "n_steps": 12,
+      "step_rew_mean": 0.2567,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.4117,
+      "step_rew_std": 0.0848,
+      "episode_score": 0.1027,
+      "last_loss": 0.043036,
+      "actions": {
+        "BLOCK_IP": 5,
+        "RUN_DEEP_SCAN": 2,
+        "IGNORE": 2,
+        "PATCH_SYSTEM": 2,
+        "ISOLATE_NODE": 1
+      }
+    },
+    {
+      "episode": 46,
+      "epsilon": 0.7087,
+      "n_steps": 20,
+      "step_rew_mean": 0.2461,
+      "step_rew_min": 0.159,
+      "step_rew_max": 0.4254,
+      "step_rew_std": 0.0648,
+      "episode_score": 0.1641,
+      "last_loss": 0.013276,
+      "actions": {
+        "BLOCK_IP": 3,
+        "ISOLATE_NODE": 1,
+        "IGNORE": 3,
+        "PATCH_SYSTEM": 4,
+        "RUN_DEEP_SCAN": 9
+      }
+    },
+    {
+      "episode": 47,
+      "epsilon": 0.7023,
+      "n_steps": 24,
+      "step_rew_mean": 0.2464,
+      "step_rew_min": 0.1662,
+      "step_rew_max": 0.3744,
+      "step_rew_std": 0.0445,
+      "episode_score": 0.1971,
+      "last_loss": 0.028413,
+      "actions": {
+        "RUN_DEEP_SCAN": 12,
+        "ISOLATE_NODE": 2,
+        "PATCH_SYSTEM": 2,
+        "IGNORE": 4,
+        "BLOCK_IP": 4
+      }
+    },
+    {
+      "episode": 48,
+      "epsilon": 0.696,
+      "n_steps": 30,
+      "step_rew_mean": 0.2052,
+      "step_rew_min": 0.0475,
+      "step_rew_max": 0.4117,
+      "step_rew_std": 0.0714,
+      "episode_score": 0.2052,
+      "last_loss": 0.007916,
+      "actions": {
+        "RUN_DEEP_SCAN": 7,
+        "BLOCK_IP": 6,
+        "IGNORE": 9,
+        "ISOLATE_NODE": 6,
+        "PATCH_SYSTEM": 2
+      }
+    },
+    {
+      "episode": 49,
+      "epsilon": 0.6897,
+      "n_steps": 25,
+      "step_rew_mean": 0.1969,
+      "step_rew_min": 0.0655,
+      "step_rew_max": 0.3807,
+      "step_rew_std": 0.0722,
+      "episode_score": 0.1641,
+      "last_loss": 0.01574,
+      "actions": {
+        "IGNORE": 5,
+        "PATCH_SYSTEM": 5,
+        "BLOCK_IP": 7,
+        "ISOLATE_NODE": 7,
+        "RUN_DEEP_SCAN": 1
+      }
+    },
+    {
+      "episode": 50,
+      "epsilon": 0.6833,
+      "n_steps": 9,
+      "step_rew_mean": 0.2572,
+      "step_rew_min": 0.165,
+      "step_rew_max": 0.5154,
+      "step_rew_std": 0.1049,
+      "episode_score": 0.0772,
+      "last_loss": 0.011518,
+      "actions": {
+        "ISOLATE_NODE": 2,
+        "IGNORE": 2,
+        "BLOCK_IP": 3,
+        "PATCH_SYSTEM": 2
+      }
+    }
+  ]
+}

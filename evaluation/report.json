@@ -1,0 +1,1162 @@
+{
+  "metadata": {
+    "generated_at": "2026-04-11T05:31:07.981505+00:00",
+    "seeds": [
+      10,
+      20,
+      30,
+      40,
+      50
+    ],
+    "tasks": [
+      "easy",
+      "medium",
+      "hard"
+    ],
+    "agents": [
+      "heuristic",
+      "dqn",
+      "ql"
+    ],
+    "n_episodes": 45,
+    "dqn_weights": "/Users/shanmukhsai/Documents/adaptive_cyber_defense/agents/dqn_weights.json",
+    "ql_table": "/Users/shanmukhsai/Documents/adaptive_cyber_defense/agents/ql_table.json",
+    "grader_formula": "0.50 \u00d7 containment_rate + 0.20 \u00d7 critical_health + 0.15 \u00d7 resource_efficiency + 0.15 \u00d7 speed_bonus",
+    "thresholds": {
+      "easy": 0.4,
+      "medium": 0.55,
+      "hard": 0.7
+    }
+  },
+  "results": {
+    "heuristic": {
+      "easy": {
+        "episodes": [
+          {
+            "task_name": "easy_single_stage",
+            "seed": 10,
+            "episode_score": 0.8567,
+            "passed": true,
+            "steps_taken": 14,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7834,
+            "total_reward": 3.6544,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7834,
+              "speed_bonus_proxy": 0.8567
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 20,
+            "episode_score": 0.8621,
+            "passed": true,
+            "steps_taken": 7,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7667,
+            "total_reward": 2.1992,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7667,
+              "speed_bonus_proxy": 0.8621
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 30,
+            "episode_score": 0.8542,
+            "passed": true,
+            "steps_taken": 14,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7715,
+            "total_reward": 3.5919,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7715,
+              "speed_bonus_proxy": 0.8542
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 40,
+            "episode_score": 0.8534,
+            "passed": true,
+            "steps_taken": 14,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7715,
+            "total_reward": 3.5147,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7715,
+              "speed_bonus_proxy": 0.8534
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 50,
+            "episode_score": 0.8603,
+            "passed": true,
+            "steps_taken": 7,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7667,
+            "total_reward": 2.1132,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7667,
+              "speed_bonus_proxy": 0.8603
+            }
+          }
+        ],
+        "scores": [
+          0.8567,
+          0.8621,
+          0.8542,
+          0.8534,
+          0.8603
+        ],
+        "mean": 0.8573,
+        "std": 0.0034,
+        "min": 0.8534,
+        "max": 0.8621,
+        "threshold": 0.4,
+        "passed": true
+      },
+      "medium": {
+        "episodes": [
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 10,
+            "episode_score": 0.7957,
+            "passed": true,
+            "steps_taken": 9,
+            "threats_total": 2,
+            "threats_contained": 2,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.4167,
+            "total_reward": 1.9901,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.4167,
+              "speed_bonus_proxy": 0.7957
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 20,
+            "episode_score": 0.7973,
+            "passed": true,
+            "steps_taken": 9,
+            "threats_total": 2,
+            "threats_contained": 2,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.4352,
+            "total_reward": 1.9205,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.4352,
+              "speed_bonus_proxy": 0.7973
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 30,
+            "episode_score": 0.7977,
+            "passed": true,
+            "steps_taken": 9,
+            "threats_total": 2,
+            "threats_contained": 2,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.4167,
+            "total_reward": 2.1143,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.4167,
+              "speed_bonus_proxy": 0.7977
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 40,
+            "episode_score": 0.8128,
+            "passed": true,
+            "steps_taken": 3,
+            "threats_total": 2,
+            "threats_contained": 2,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.4167,
+            "total_reward": 1.0059,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.4167,
+              "speed_bonus_proxy": 0.8128
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 50,
+            "episode_score": 0.7829,
+            "passed": true,
+            "steps_taken": 16,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 0.9562,
+            "avg_resource_left": 0.4167,
+            "total_reward": 3.1088,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 0.9562,
+              "resource_efficiency": 0.4167,
+              "speed_bonus_proxy": 0.7829
+            }
+          }
+        ],
+        "scores": [
+          0.7957,
+          0.7973,
+          0.7977,
+          0.8128,
+          0.7829
+        ],
+        "mean": 0.7973,
+        "std": 0.0095,
+        "min": 0.7829,
+        "max": 0.8128,
+        "threshold": 0.55,
+        "passed": true
+      },
+      "hard": {
+        "episodes": [
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 10,
+            "episode_score": 0.8317,
+            "passed": true,
+            "steps_taken": 22,
+            "threats_total": 4,
+            "threats_contained": 4,
+            "containment_rate": 1.0,
+            "critical_health_end": 0.8603,
+            "avg_resource_left": 0.8333,
+            "total_reward": 5.0746,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 0.8603,
+              "resource_efficiency": 0.8333,
+              "speed_bonus_proxy": 0.8317
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 20,
+            "episode_score": 0.7369,
+            "passed": true,
+            "steps_taken": 30,
+            "threats_total": 7,
+            "threats_contained": 6,
+            "containment_rate": 0.8571,
+            "critical_health_end": 0.764,
+            "avg_resource_left": 0.85,
+            "total_reward": 5.6124,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.8571,
+              "critical_health": 0.764,
+              "resource_efficiency": 0.85,
+              "speed_bonus_proxy": 0.7369
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 30,
+            "episode_score": 0.8562,
+            "passed": true,
+            "steps_taken": 9,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7778,
+            "total_reward": 2.3704,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7778,
+              "speed_bonus_proxy": 0.8562
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 40,
+            "episode_score": 0.8431,
+            "passed": true,
+            "steps_taken": 11,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7121,
+            "total_reward": 2.6576,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7121,
+              "speed_bonus_proxy": 0.8431
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 50,
+            "episode_score": 0.7297,
+            "passed": true,
+            "steps_taken": 30,
+            "threats_total": 6,
+            "threats_contained": 5,
+            "containment_rate": 0.8333,
+            "critical_health_end": 0.7767,
+            "avg_resource_left": 0.85,
+            "total_reward": 6.0432,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.8333,
+              "critical_health": 0.7767,
+              "resource_efficiency": 0.85,
+              "speed_bonus_proxy": 0.7297
+            }
+          }
+        ],
+        "scores": [
+          0.8317,
+          0.7369,
+          0.8562,
+          0.8431,
+          0.7297
+        ],
+        "mean": 0.7995,
+        "std": 0.0547,
+        "min": 0.7297,
+        "max": 0.8562,
+        "threshold": 0.7,
+        "passed": true
+      }
+    },
+    "dqn": {
+      "easy": {
+        "episodes": [
+          {
+            "task_name": "easy_single_stage",
+            "seed": 10,
+            "episode_score": 0.885,
+            "passed": true,
+            "steps_taken": 4,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.8417,
+            "total_reward": 1.5662,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.8417,
+              "speed_bonus_proxy": 0.885
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 20,
+            "episode_score": 0.8663,
+            "passed": true,
+            "steps_taken": 7,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7857,
+            "total_reward": 2.2602,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7857,
+              "speed_bonus_proxy": 0.8663
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 30,
+            "episode_score": 0.8872,
+            "passed": true,
+            "steps_taken": 13,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.9462,
+            "total_reward": 3.9243,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.9462,
+              "speed_bonus_proxy": 0.8872
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 40,
+            "episode_score": 0.8541,
+            "passed": true,
+            "steps_taken": 15,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.7711,
+            "total_reward": 3.8465,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.7711,
+              "speed_bonus_proxy": 0.8541
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 50,
+            "episode_score": 0.7043,
+            "passed": true,
+            "steps_taken": 30,
+            "threats_total": 3,
+            "threats_contained": 2,
+            "containment_rate": 0.6667,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.8978,
+            "total_reward": 7.2495,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.6667,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.8978,
+              "speed_bonus_proxy": 0.7043
+            }
+          }
+        ],
+        "scores": [
+          0.885,
+          0.8663,
+          0.8872,
+          0.8541,
+          0.7043
+        ],
+        "mean": 0.8394,
+        "std": 0.0686,
+        "min": 0.7043,
+        "max": 0.8872,
+        "threshold": 0.4,
+        "passed": true
+      },
+      "medium": {
+        "episodes": [
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 10,
+            "episode_score": 0.8547,
+            "passed": true,
+            "steps_taken": 16,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 0.9678,
+            "avg_resource_left": 0.8385,
+            "total_reward": 3.7711,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 0.9678,
+              "resource_efficiency": 0.8385,
+              "speed_bonus_proxy": 0.8547
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 20,
+            "episode_score": 0.8232,
+            "passed": true,
+            "steps_taken": 11,
+            "threats_total": 2,
+            "threats_contained": 2,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.5909,
+            "total_reward": 2.5372,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.5909,
+              "speed_bonus_proxy": 0.8232
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 30,
+            "episode_score": 0.857,
+            "passed": true,
+            "steps_taken": 32,
+            "threats_total": 4,
+            "threats_contained": 4,
+            "containment_rate": 1.0,
+            "critical_health_end": 0.9559,
+            "avg_resource_left": 0.8724,
+            "total_reward": 7.4544,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 0.9559,
+              "resource_efficiency": 0.8724,
+              "speed_bonus_proxy": 0.857
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 40,
+            "episode_score": 0.7924,
+            "passed": true,
+            "steps_taken": 12,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 0.9658,
+            "avg_resource_left": 0.4445,
+            "total_reward": 2.6049,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 0.9658,
+              "resource_efficiency": 0.4445,
+              "speed_bonus_proxy": 0.7924
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 50,
+            "episode_score": 0.8274,
+            "passed": true,
+            "steps_taken": 45,
+            "threats_total": 3,
+            "threats_contained": 3,
+            "containment_rate": 1.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.6463,
+            "total_reward": 9.1489,
+            "terminal_reason": "all_contained",
+            "grader_inputs": {
+              "containment_rate": 1.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.6463,
+              "speed_bonus_proxy": 0.8274
+            }
+          }
+        ],
+        "scores": [
+          0.8547,
+          0.8232,
+          0.857,
+          0.7924,
+          0.8274
+        ],
+        "mean": 0.8309,
+        "std": 0.0237,
+        "min": 0.7924,
+        "max": 0.857,
+        "threshold": 0.55,
+        "passed": true
+      },
+      "hard": {
+        "episodes": [
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 10,
+            "episode_score": 0.6266,
+            "passed": false,
+            "steps_taken": 26,
+            "threats_total": 5,
+            "threats_contained": 3,
+            "containment_rate": 0.6,
+            "critical_health_end": 0.8,
+            "avg_resource_left": 0.891,
+            "total_reward": 5.7126,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.6,
+              "critical_health": 0.8,
+              "resource_efficiency": 0.891,
+              "speed_bonus_proxy": 0.6266
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 20,
+            "episode_score": 0.7104,
+            "passed": true,
+            "steps_taken": 30,
+            "threats_total": 3,
+            "threats_contained": 2,
+            "containment_rate": 0.6667,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 0.9333,
+            "total_reward": 7.4116,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.6667,
+              "critical_health": 1.0,
+              "resource_efficiency": 0.9333,
+              "speed_bonus_proxy": 0.7104
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 30,
+            "episode_score": 0.6116,
+            "passed": false,
+            "steps_taken": 22,
+            "threats_total": 5,
+            "threats_contained": 3,
+            "containment_rate": 0.6,
+            "critical_health_end": 0.7519,
+            "avg_resource_left": 0.8636,
+            "total_reward": 4.6477,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.6,
+              "critical_health": 0.7519,
+              "resource_efficiency": 0.8636,
+              "speed_bonus_proxy": 0.6116
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 40,
+            "episode_score": 0.5214,
+            "passed": false,
+            "steps_taken": 28,
+            "threats_total": 6,
+            "threats_contained": 3,
+            "containment_rate": 0.5,
+            "critical_health_end": 0.5246,
+            "avg_resource_left": 0.9107,
+            "total_reward": 5.5736,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.5,
+              "critical_health": 0.5246,
+              "resource_efficiency": 0.9107,
+              "speed_bonus_proxy": 0.5214
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 50,
+            "episode_score": 0.55,
+            "passed": false,
+            "steps_taken": 29,
+            "threats_total": 6,
+            "threats_contained": 3,
+            "containment_rate": 0.5,
+            "critical_health_end": 0.6762,
+            "avg_resource_left": 0.8908,
+            "total_reward": 6.0242,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.5,
+              "critical_health": 0.6762,
+              "resource_efficiency": 0.8908,
+              "speed_bonus_proxy": 0.55
+            }
+          }
+        ],
+        "scores": [
+          0.6266,
+          0.7104,
+          0.6116,
+          0.5214,
+          0.55
+        ],
+        "mean": 0.604,
+        "std": 0.0658,
+        "min": 0.5214,
+        "max": 0.7104,
+        "threshold": 0.7,
+        "passed": false
+      }
+    },
+    "ql": {
+      "easy": {
+        "episodes": [
+          {
+            "task_name": "easy_single_stage",
+            "seed": 10,
+            "episode_score": 0.3872,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 3,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 1.0,
+            "total_reward": 7.45,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3872
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 20,
+            "episode_score": 0.359,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 4,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.8716,
+            "avg_resource_left": 1.0,
+            "total_reward": 6.9442,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.8716,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.359
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 30,
+            "episode_score": 0.3716,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 4,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.9316,
+            "avg_resource_left": 1.0,
+            "total_reward": 7.0628,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.9316,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3716
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 40,
+            "episode_score": 0.3719,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 4,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.9316,
+            "avg_resource_left": 1.0,
+            "total_reward": 7.1115,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.9316,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3719
+            }
+          },
+          {
+            "task_name": "easy_single_stage",
+            "seed": 50,
+            "episode_score": 0.3595,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 4,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.8719,
+            "avg_resource_left": 1.0,
+            "total_reward": 7.0323,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.8719,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3595
+            }
+          }
+        ],
+        "scores": [
+          0.3872,
+          0.359,
+          0.3716,
+          0.3719,
+          0.3595
+        ],
+        "mean": 0.3698,
+        "std": 0.0103,
+        "min": 0.359,
+        "max": 0.3872,
+        "threshold": 0.4,
+        "passed": false
+      },
+      "medium": {
+        "episodes": [
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 10,
+            "episode_score": 0.3136,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 6,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.6621,
+            "avg_resource_left": 1.0,
+            "total_reward": 6.2282,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.6621,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3136
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 20,
+            "episode_score": 0.3864,
+            "passed": false,
+            "steps_taken": 50,
+            "threats_total": 2,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 1.0,
+            "total_reward": 12.125,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3864
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 30,
+            "episode_score": 0.2978,
+            "passed": false,
+            "steps_taken": 29,
+            "threats_total": 6,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.5926,
+            "avg_resource_left": 1.0,
+            "total_reward": 5.6522,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.5926,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.2978
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 40,
+            "episode_score": 0.3867,
+            "passed": false,
+            "steps_taken": 50,
+            "threats_total": 2,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 1.0,
+            "total_reward": 12.2333,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3867
+            }
+          },
+          {
+            "task_name": "medium_multi_stage",
+            "seed": 50,
+            "episode_score": 0.3431,
+            "passed": false,
+            "steps_taken": 50,
+            "threats_total": 4,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.8,
+            "avg_resource_left": 1.0,
+            "total_reward": 11.0203,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.8,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3431
+            }
+          }
+        ],
+        "scores": [
+          0.3136,
+          0.3864,
+          0.2978,
+          0.3867,
+          0.3431
+        ],
+        "mean": 0.3455,
+        "std": 0.0365,
+        "min": 0.2978,
+        "max": 0.3867,
+        "threshold": 0.55,
+        "passed": false
+      },
+      "hard": {
+        "episodes": [
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 10,
+            "episode_score": 0.3431,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 4,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.8,
+            "avg_resource_left": 1.0,
+            "total_reward": 6.6125,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.8,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3431
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 20,
+            "episode_score": 0.2789,
+            "passed": false,
+            "steps_taken": 22,
+            "threats_total": 6,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.5081,
+            "avg_resource_left": 1.0,
+            "total_reward": 4.0074,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.5081,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.2789
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 30,
+            "episode_score": 0.3859,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 3,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 1.0,
+            "total_reward": 7.19,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3859
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 40,
+            "episode_score": 0.3861,
+            "passed": false,
+            "steps_taken": 30,
+            "threats_total": 3,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 1.0,
+            "avg_resource_left": 1.0,
+            "total_reward": 7.22,
+            "terminal_reason": "max_steps",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 1.0,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3861
+            }
+          },
+          {
+            "task_name": "hard_apt_campaign",
+            "seed": 50,
+            "episode_score": 0.3082,
+            "passed": false,
+            "steps_taken": 21,
+            "threats_total": 5,
+            "threats_contained": 0,
+            "containment_rate": 0.0,
+            "critical_health_end": 0.6403,
+            "avg_resource_left": 1.0,
+            "total_reward": 4.2242,
+            "terminal_reason": "critical_asset_failure",
+            "grader_inputs": {
+              "containment_rate": 0.0,
+              "critical_health": 0.6403,
+              "resource_efficiency": 1.0,
+              "speed_bonus_proxy": 0.3082
+            }
+          }
+        ],
+        "scores": [
+          0.3431,
+          0.2789,
+          0.3859,
+          0.3861,
+          0.3082
+        ],
+        "mean": 0.3404,
+        "std": 0.0424,
+        "min": 0.2789,
+        "max": 0.3861,
+        "threshold": 0.7,
+        "passed": false
+      }
+    }
+  },
+  "summary": {
+    "heuristic": {
+      "easy": {
+        "mean": 0.8573,
+        "std": 0.0034,
+        "threshold": 0.4,
+        "result": "PASS"
+      },
+      "medium": {
+        "mean": 0.7973,
+        "std": 0.0095,
+        "threshold": 0.55,
+        "result": "PASS"
+      },
+      "hard": {
+        "mean": 0.7995,
+        "std": 0.0547,
+        "threshold": 0.7,
+        "result": "PASS"
+      }
+    },
+    "dqn": {
+      "easy": {
+        "mean": 0.8394,
+        "std": 0.0686,
+        "threshold": 0.4,
+        "result": "PASS"
+      },
+      "medium": {
+        "mean": 0.8309,
+        "std": 0.0237,
+        "threshold": 0.55,
+        "result": "PASS"
+      },
+      "hard": {
+        "mean": 0.604,
+        "std": 0.0658,
+        "threshold": 0.7,
+        "result": "FAIL"
+      }
+    },
+    "ql": {
+      "easy": {
+        "mean": 0.3698,
+        "std": 0.0103,
+        "threshold": 0.4,
+        "result": "FAIL"
+      },
+      "medium": {
+        "mean": 0.3455,
+        "std": 0.0365,
+        "threshold": 0.55,
+        "result": "FAIL"
+      },
+      "hard": {
+        "mean": 0.3404,
+        "std": 0.0424,
+        "threshold": 0.7,
+        "result": "FAIL"
+      }
+    }
+  },
+  "grader_validation": {
+    "total_episodes": 45,
+    "strict_violations": 0,
+    "boundary_clamps": 0,
+    "errors": [],
+    "boundary_details": [],
+    "passed": true
+  }
+}
