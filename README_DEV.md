@@ -173,16 +173,20 @@ RESURFACE (persistent threats only):
 ```python
 NODES = ["node_1", "node_2", "node_3", "node_4", "node_5"]
 
+# Topology: node_1 — node_2 — node_3 — node_4 — node_5
+#                        └───────────────── node_5
+# node_2 is the primary hub (3 edges); node_5 is the secondary hub (2 edges).
+# Lateral spread is topology-constrained: threats can only move along these edges.
 NODE_CRITICALITY = {
-    "node_1": 0.3,   # DMZ — low value
-    "node_2": 0.5,   # Workstation
-    "node_3": 0.8,   # Network hub — high value
-    "node_4": 0.6,   # Server
-    "node_5": 0.9,   # Database — critical
+    "node_1": 0.40,  # edge leaf — low-value ingress point
+    "node_2": 0.90,  # primary hub — connects node_1, node_3, node_5
+    "node_3": 0.60,  # mid-chain application server
+    "node_4": 0.50,  # secondary endpoint
+    "node_5": 0.80,  # secondary hub — connects node_2, node_4
 }
 ```
 
-Node criticality feeds into `compute_criticality_weighted_containment()` in `grader.py`. Containing node_5 contributes 3× more to the effective containment term than containing node_1.
+Node criticality feeds into `compute_criticality_weighted_containment()` in `grader.py`. Containing node_2 (0.90) contributes 2.25× more to the effective containment term than containing node_1 (0.40). Agents that contain the easiest-to-reach threat rather than the most critical one receive a lower criticality-weighted score.
 
 ---
 

@@ -68,7 +68,7 @@ observation:
         Threats currently visible to the agent. Each entry contains ONLY behavioral
         IOC signals — threat classification labels and MITRE technique names
         are intentionally withheld. The agent must classify and respond based on:
-        id (opaque), node, stage (initial|lateral_movement), age, dwell_time_steps,
+        id (opaque), node, stage (initial|lateral_movement), age (steps visible),
         escalated (bool), severity (0.0–1.0), detection_confidence (0.0–1.0),
         is_persistent (bool), spread_rate (0.0–1.0), affected_node_count (int),
         packets_per_second (int), failed_auth_attempts (int),
@@ -97,37 +97,20 @@ observation:
       description: "True when the episode is over (health <= 0 or max steps reached)"
     - name: episode_info
       type: dict
-      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, and grader_breakdown (component breakdown of the grader score)."
-
-observation_space:
-  type: dict
-  fields:
-    - name: active_threats
-      type: list
-      description: "Threats with behavioral IOCs only — no type field"
-    - name: network_state
-      type: dict
-      description: "Per-node health, status, criticality"
-    - name: resources
-      type: dict
-      description: "Remaining scan capacity and response slots"
-    - name: step
-      type: int
-      description: "Current time step"
-    - name: score
-      type: float
-      description: "Cumulative reward so far"
+      description: "Grader metrics including containment_rate, critical_health, resources_remaining, speed_bonus, containment_events, false_positives_seen, false_positives_acted_on, unconfirmed_visible_count, and grader_breakdown (containment/health/resource/speed/fp_penalty components of the grader score)."
 
 action:
   type: discrete
   description: >
-    9 discrete actions. Defense actions only work against visible threats.
+    19 discrete actions. Defense actions only work against visible threats.
     Use SCAN actions to reveal hidden threats before applying mitigations.
     The correct mitigation must be inferred from behavioral
     IOC patterns in the observation. No ground-truth labels
     are provided. Agents that reason about packet rates,
     auth failures, lateral connections, and outbound bytes
     will consistently outperform agents that guess.
+    VERIFY actions confirm a threat before acting (optional — earns +0.15 reward signal).
+    MONITOR actions reduce resurface risk on contained persistent threats (+0.10 reward signal).
     WARNING: Some visible threats may be false positives injected by the environment.
     False positive threats appear identical to real threats. Acting on a false positive
     removes it from view but yields no containment credit and counts against resources.
@@ -137,11 +120,11 @@ action:
     - name: isolate_machine
       description: "Neutralises malware (T1204) and ransomware (T1486) threats"
     - name: patch
-      description: "Neutralises DDoS (T1499) threats"
+      description: "Neutralises DDoS (T1499) threats. Takes 2 steps to complete — threat remains active during deployment."
     - name: ignore
-      description: "No mitigation applied. Health -10, reward penalty"
+      description: "No mitigation applied. When a visible threat is active: health -10, reward penalty. When no threats are visible: neutral (no penalty — correct no-op)."
     - name: scan_node_1
-      description: "Scan node_1 to reveal hidden threats"
+      description: "Scan node_1 to reveal hidden threats. Reward: +0.25 if real threat found, -0.05 if FP, -0.10 if clean, -0.20 if already contained, -0.30 if budget exhausted."
     - name: scan_node_2
       description: "Scan node_2 to reveal hidden threats"
     - name: scan_node_3
@@ -150,6 +133,26 @@ action:
       description: "Scan node_4 to reveal hidden threats"
     - name: scan_node_5
       description: "Scan node_5 to reveal hidden threats"
+    - name: verify_node_1
+      description: "Verify visible threats on node_1 before mitigating. Reward: +0.15 if unverified threat confirmed, -0.08 if nothing to verify (wasted step)."
+    - name: verify_node_2
+      description: "Verify visible threats on node_2 before mitigating"
+    - name: verify_node_3
+      description: "Verify visible threats on node_3 before mitigating"
+    - name: verify_node_4
+      description: "Verify visible threats on node_4 before mitigating"
+    - name: verify_node_5
+      description: "Verify visible threats on node_5 before mitigating"
+    - name: monitor_node_1
+      description: "Monitor node_1 post-containment to reduce resurface risk on persistent threats. Reward: +0.10 if resurface risk reduced, -0.08 if nothing to monitor."
+    - name: monitor_node_2
+      description: "Monitor node_2 post-containment to reduce resurface risk"
+    - name: monitor_node_3
+      description: "Monitor node_3 post-containment to reduce resurface risk"
+    - name: monitor_node_4
+      description: "Monitor node_4 post-containment to reduce resurface risk"
+    - name: monitor_node_5
+      description: "Monitor node_5 post-containment to reduce resurface risk"
 
 action_space:
   type: discrete
@@ -163,24 +166,40 @@ action_space:
     - scan_node_3
     - scan_node_4
     - scan_node_5
+    - verify_node_1
+    - verify_node_2
+    - verify_node_3
+    - verify_node_4
+    - verify_node_5
+    - monitor_node_1
+    - monitor_node_2
+    - monitor_node_3
+    - monitor_node_4
+    - monitor_node_5
 
 reward:
   range: [-0.30, 0.775]
   description: >
-    Mitigation actions are normalized via (raw + 2.0) / 4.0 → [0.0, 1.0]:
-      Correct mitigation: raw 1.0 → 0.750 (early bonus if threat age < 3: raw 1.1 → 0.775).
-      Wrong mitigation:   raw -0.5 → 0.375.
-      Ignore:             raw -1.5 → 0.125.
+    Mitigation rewards are normalized via (raw + 2.0) / 4.0 → [0.0, 1.0]:
+      Correct + instant containment:  raw 1.0 → 0.750 (age < 3 early bonus: raw 1.1 → 0.775).
+      Correct + patch queued:         raw 0.80 → 0.700 (patch takes 2 steps to resolve).
+      Wrong mitigation:               raw -0.50 → 0.375.
+      Ignore with visible threat:                raw -1.50 → 0.125 (+ health -10).
+      Ignore with no visible threats:            neutral (correct no-op, no penalty).
     Scan rewards are direct values (not normalized) to penalise wasted scans:
       Scan reveals real threat         → +0.25
       Scan reveals false positive      → -0.05
       Scan clean node (nothing found)  → -0.10
-      Scan already-contained node      → -0.2
+      Scan already-contained node      → -0.20
       Scan while resources exhausted   → -0.30
-    Agents must use behavioral IOCs to decide WHERE to scan rather than scanning blindly.
-    Correct action is inferred from behavioral IOC signals.
-    The environment does not expose threat type — the agent
-    must classify each threat from its observable indicators.
+    Verify rewards reward disciplined confirmation before acting:
+      Unverified threat confirmed      → +0.15
+      Nothing new to verify            → -0.08  (wasted step)
+    Monitor rewards post-containment vigilance on persistent threats:
+      Resurface risk reduced           → +0.10
+      Nothing resurfaceable on node    → -0.08  (wasted step)
+    Agents must reason from behavioral IOCs to decide which action to apply.
+    The environment never exposes threat type — classification is always inferred.
 
 termination:
   conditions:
@@ -189,23 +208,29 @@ termination:
 
 network:
   nodes: 5
-  description: "5-node network (node_1 through node_5). Threats spawn on these nodes."
+  description: "5-node network (node_1 through node_5) with a hub-and-leaf topology. node_2 is the primary hub (connects node_1, node_3, node_5). node_5 is the secondary hub (connects node_2, node_4). Threats spawn and spread along these edges."
+  topology: "node_1 -- node_2 -- node_3 -- node_4 -- node_5; node_2 also connects to node_5"
   assets:
     - id: node_1
-      type: workstation
-      criticality: 0.3
+      type: edge_workstation
+      criticality: 0.40
+      description: "Leaf node — low-value ingress point"
     - id: node_2
-      type: workstation
-      criticality: 0.3
+      type: primary_hub
+      criticality: 0.90
+      description: "Primary hub — connects node_1, node_3, node_5; highest-value target"
     - id: node_3
-      type: server
-      criticality: 0.7
+      type: application_server
+      criticality: 0.60
+      description: "Mid-chain application server"
     - id: node_4
-      type: server
-      criticality: 0.7
+      type: endpoint
+      criticality: 0.50
+      description: "Secondary endpoint"
     - id: node_5
-      type: database
-      criticality: 0.9
+      type: secondary_hub
+      criticality: 0.80
+      description: "Secondary hub — connects node_2, node_4; alternate high-value target"
 
 mitre_attack:
   version: "14.0"

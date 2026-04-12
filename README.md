@@ -264,14 +264,20 @@ python -m pytest tests/ -v
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────┐
-│              Corporate Network (5 nodes)          │
-│                                                   │
-│   node_1 (DMZ) ──── node_3 (HUB) ──── node_5    │
-│                          │           (DB server)  │
-│                    node_2   node_4               │
-│                    (WS)     (SRV)                │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                 Corporate Network (5 nodes)                │
+│                                                            │
+│  node_1          node_2 [PRIMARY HUB]          node_5     │
+│  (edge, 0.40) ── (crit: 0.90) ──────────────── (hub, 0.80)│
+│                      │                              │      │
+│                  node_3                         node_4    │
+│               (app server, 0.60)           (endpoint, 0.50)│
+└──────────────────────────────────────────────────────────┘
+
+Topology: node_1–node_2–node_3–node_4–node_5; node_2 also connects node_5
+Lateral spread follows edges only — attackers must traverse the graph.
+Node criticality weights the grader: containing node_2 scores 2× node_1.
+
            ↑ multi-stage kill chains
 ┌─────────────────────┐
 │   Adaptive Red Team  │

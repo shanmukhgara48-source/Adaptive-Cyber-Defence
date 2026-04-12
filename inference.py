@@ -56,6 +56,8 @@ TIMEOUT = 30  # seconds — judge evaluation timeout
 VALID_ACTIONS = [
     "block_ip", "isolate_machine", "patch", "ignore",
     *[f"scan_node_{i}" for i in range(1, 6)],
+    *[f"verify_node_{i}" for i in range(1, 6)],
+    *[f"monitor_node_{i}" for i in range(1, 6)],
 ]
 
 # max_tokens must fit: {"action":"PATCH_VULNERABILITY","target":"node_5","reasoning":"...~80 chars..."}
@@ -90,7 +92,7 @@ ACTION_MAP: dict[str, str] = {
     "PATCH_VULNERABILITY": "patch",
     "DO_NOTHING":          "ignore",
     "IGNORE":              "ignore",
-    # SCAN is handled separately — requires the target node field
+    # SCAN, VERIFY, MONITOR handled separately — require the target node field
 }
 
 # ---------------------------------------------------------------------------
@@ -105,8 +107,10 @@ kind of attack is occurring, then choose the single best defensive action.
 Available actions:
   ISOLATE_MACHINE — network isolation of a compromised node
   BLOCK_IP        — block a source IP address
-  PATCH           — apply a security patch to a node
-  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats
+  PATCH           — apply a security patch to a node (2-step delay)
+  SCAN_NODE_1 through SCAN_NODE_5 — reveal hidden threats (+0.25 if real, -0.10 if clean)
+  VERIFY_NODE_1 through VERIFY_NODE_5 — confirm a visible threat before acting (+0.15 reward)
+  MONITOR_NODE_1 through MONITOR_NODE_5 — reduce resurface risk post-containment (+0.10 reward)
   DO_NOTHING      — take no action (heavy penalty)
 
 Your job is to reason from the IOC signals which action is most appropriate. \
@@ -218,10 +222,18 @@ def _map_to_env_action(action: str, target: str, scanned_nodes: set) -> str | No
     """Convert the LLM's (action, target) pair to a valid environment action string.
     Returns None if the mapping is impossible.
     """
-    if action.upper().startswith("SCAN_NODE_"):
+    if action.upper().startswith(("SCAN_NODE_", "VERIFY_NODE_", "MONITOR_NODE_")):
         candidate = action.lower()
         if candidate in VALID_ACTIONS:
             return candidate
+
+    if action in ("VERIFY", "MONITOR"):
+        prefix = "verify" if action == "VERIFY" else "monitor"
+        if target.startswith("node_"):
+            candidate = f"{prefix}_{target}"
+            if candidate in VALID_ACTIONS:
+                return candidate
+        return None
 
     if action == "SCAN":
         # Prefer the LLM's target node if it hasn't been scanned yet

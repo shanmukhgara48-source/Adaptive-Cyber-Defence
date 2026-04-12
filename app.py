@@ -712,9 +712,9 @@ def _make_threats_fixed(task_config: dict, rng: random.Random, attacker=None,
             "mitre_id":        MITRE_MAP[t_type],
             "severity":        _initial_severity(t_type, rng),
             # ── Sequential decision fields ───────────────────────────────────
-            # is_verified: agent must call verify_node_X before mitigating to
-            # avoid an unverified-action penalty.  Skipping verify is allowed
-            # but yields a 50% failure roll and a −0.20 reward penalty.
+            # is_verified: set to True after verify_node_X is called on this threat's node.
+            # Verify is optional — it earns +0.15 reward when it confirms a new threat.
+            # Mitigating without verify is fully valid; there is no penalty for skipping it.
             "is_verified":           False,
             # pending_action/mitigation_progress: patch is a 2-step delayed action.
             # During the delay the threat keeps escalating; agents must track it.
@@ -829,34 +829,6 @@ def _clamp_score(sess: Session) -> None:
 
 
 # ─── LOGIC ────────────────────────────────────────────────────────────────────
-def enrich_threat(threat: dict) -> dict:
-    """Ensure every visible threat has all required fields with safe defaults."""
-    if not isinstance(threat, dict):
-        return threat
-
-    t_type = threat.get("type", "malware")
-
-    tech_id, tech_name, tactic = TECHNIQUE_DEFAULTS.get(
-        t_type,
-        ("T1204", "User Execution", "Execution"),
-    )
-
-    threat["id"]    = str(threat.get("id", f"{t_type}_{threat.get('node', 'unknown')}"))
-    threat["type"]  = str(t_type)
-    threat["node"]  = str(threat.get("node", "node_1"))
-    threat["stage"] = str(threat.get("stage", "initial"))
-
-    threat["age"]      = int(threat.get("age", 0))
-    threat["severity"] = float(threat.get("severity", 0.5))
-
-    threat["technique_id"]   = threat.get("technique_id")   or tech_id
-    threat["technique_name"] = threat.get("technique_name") or tech_name
-    threat["tactic"]         = threat.get("tactic")         or tactic
-
-    threat["detection_confidence"] = float(threat.get("detection_confidence", 1.0))
-
-    return threat
-
 
 def _update_visibility(sess: Session) -> None:
     """Auto-reveal threats based on age or lateral movement, gated by task difficulty.
@@ -1175,7 +1147,6 @@ def _visible_threats(sess: Session) -> list:
                 # type/original_type intentionally withheld per spec — agents must
                 # classify from behavioral IOC signals, not from a label lookup.
                 "age":                    int(t["age"]),
-                "dwell_time_steps":       int(t["age"]),      # alias for clarity
                 "escalated":              bool(t.get("escalated", False)),
                 "severity":               round(float(t.get("severity", 0.5)), 3),
                 "detection_confidence":   round(float(t.get("detection_confidence", 0.8)), 3),
@@ -1188,8 +1159,8 @@ def _visible_threats(sess: Session) -> list:
                 "lateral_connection_count": int(t.get("lateral_connection_count", 0)),
                 "unusual_process_count":  int(t.get("unusual_process_count", 0)),
                 # ── Sequential decision signals ──────────────────────────────
-                # is_verified: agent called verify_node_X on this threat's node.
-                # Mitigating without verification works but risks double penalty.
+                # is_verified: True after verify_node_X was called on this threat's node.
+                # Verify is optional — earns +0.15 reward; no penalty for skipping it.
                 "is_verified":            bool(t.get("is_verified", False)),
                 # mitigation_in_progress: > 0 means a delayed patch is running.
                 # Sending another mitigation action to this threat is wasted.
@@ -1285,7 +1256,7 @@ def _obs(sess: Session) -> dict:
                 for t in sess.state["threats"]
                 if t.get("contained") and t.get("resurface_risk", 0.0) > 0
             ],
-            "unverified_visible_count": sum(
+            "unconfirmed_visible_count": sum(
                 1 for t in sess.state["threats"]
                 if t.get("visible") and not t.get("contained")
                 and not t.get("is_false_positive") and not t.get("is_verified")
@@ -1296,7 +1267,6 @@ def _obs(sess: Session) -> dict:
                 "resource": _resources_remaining,
                 "speed": _speed_bonus,
                 "fp_penalty": round(_fp_penalty_obs, 4),
-                "grader_score": grader,
             },
             "network_topology": {
                 # Live graph state — edges are fixed; node_status reflects current compromise/scan state.
@@ -1634,7 +1604,6 @@ def step(req: StepRequest):
         verify_already_done  = False     # verify on a node where threats already verified
         monitor_reduced_risk = False     # monitor_node reduced a resurface risk
         monitor_nothing      = False     # monitor on node with no resurfaceable threats
-        unverified_penalty   = False     # mitigation applied to unverified threat
         patch_queued         = False     # patch action queued (delayed — not instant)
 
         # ── RESOURCE CHECK ──
@@ -1757,8 +1726,7 @@ def step(req: StepRequest):
             # advances exactly once per defense step, keeping the sequence stable
             # regardless of whether _resource_exhausted is True this step.
             _exhaust_roll = sess.rng.random()
-            # Pre-roll unverified penalty dice (consumed every defense step for RNG determinism)
-            _unverified_roll = sess.rng.random()
+            _ = sess.rng.random()  # consume slot for RNG-sequence stability (was: unverified penalty roll)
 
             for t in s["threats"]:
                 if t["visible"] and not t.get("contained"):
@@ -1786,16 +1754,6 @@ def step(req: StepRequest):
                             matched = False  # action attempted but resource-starved response failed
                             reason = "Action failed. Resource budget depleted."
                             confidence = 0.30
-                        elif not t.get("is_verified") and _unverified_roll < 0.50:
-                            # Unverified threat: 50% chance the action fails — agents should
-                            # verify first to confirm the threat type before committing a
-                            # costly mitigation.  Correct action but wrong target classification
-                            # risk drives this failure, not resource exhaustion.
-                            matched_threat_type = t.get("original_type", t["type"])
-                            matched = False
-                            unverified_penalty = True
-                            reason = "Action failed. Threat was not verified. Use verify_node_X first."
-                            confidence = 0.25
                         else:
                             # ── Successful mitigation ────────────────────────────────────
                             delay = _MITIGATION_DELAY.get(raw_action, 0)
@@ -1831,7 +1789,7 @@ def step(req: StepRequest):
                 # baselines for zero-threat and early-episode edge cases.
                 if raw_action == "ignore" and matched_threat_type is not None:
                     s["system_health"] = max(0, s["system_health"] - 10)
-                elif not unverified_penalty and not patch_queued:
+                elif not patch_queued:
                     s["system_health"] = max(0, s["system_health"] - 5)
 
             if not reason:
@@ -1868,7 +1826,7 @@ def step(req: StepRequest):
         #   scan while resources exhausted     → -0.30
         #
         # Verify (direct — rewards disciplined confirmation before acting):
-        #   unverified threat confirmed        → +0.15
+        #   unconfirmed threat confirmed       → +0.15
         #   nothing new to verify              → -0.08  (wasted step)
         #
         # Monitor (direct — rewards post-containment vigilance):
@@ -1876,11 +1834,11 @@ def step(req: StepRequest):
         #   nothing resurfaceable              → -0.08  (wasted step)
         #
         # Mitigation (normalized via _clamp_reward((r + 2.0) / 4.0) → (0, 1)):
-        #   correct + verified + instant       → raw 1.1 (early) / 1.0  → 0.775 / 0.750
-        #   correct + verified + patch queued  → raw 0.80              → 0.700  (delay accepted)
-        #   correct + unverified (50% fail)    → raw -0.70             → 0.325  (double penalty)
-        #   wrong action                       → raw -0.50             → 0.375
-        #   ignore                             → raw -1.50             → 0.125
+        #   correct + instant (age < 3 early)  → raw 1.1 → 0.775
+        #   correct + instant                  → raw 1.0 → 0.750
+        #   correct + patch queued             → raw 0.80 → 0.700  (delay accepted)
+        #   wrong action                       → raw -0.50 → 0.375
+        #   ignore with visible threat         → raw -1.50 → 0.125
         if raw_action.startswith("scan"):
             if _resource_exhausted:
                 reward = -0.30
@@ -1915,9 +1873,6 @@ def step(req: StepRequest):
             elif matched:
                 # Instant containment: full reward with early-act bonus
                 reward = _clamp_reward(1.1 if early_bonus else 1.0)
-            elif unverified_penalty:
-                # Correct action on unverified threat that failed the 50% roll
-                reward = _clamp_reward(-0.70)
             else:
                 reward = _clamp_reward(-0.50)
         else:
@@ -1952,7 +1907,8 @@ def step(req: StepRequest):
             if tid:
                 sess.threats_detected.add(tid)
         for t in s["threats"]:
-            if t.get("contained"):
+            # Exclude false positives so analytics containment_rate matches the grader formula.
+            if t.get("contained") and not t.get("is_false_positive"):
                 tid = str(t.get("id", f"{t['type']}_{t['node']}"))
                 sess.threats_contained.add(tid)
 
