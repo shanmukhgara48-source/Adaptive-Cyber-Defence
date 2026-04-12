@@ -34,6 +34,19 @@ The system has two parallel layers. Both share a single grader formula. Only the
 
 **Key invariant:** `grader.py` is imported by both layers. The score formula is never duplicated. Any divergence between layers is a bug.
 
+---
+
+## Simulation Consistency
+
+This project uses two interfaces:
+
+- **HTTP API (`app.py`)** — authoritative evaluation path used by OpenEnv judges and `inference.py`. FastAPI server, session-scoped state, direct reward computation.
+- **OOP environment (`env.py`)** — used for RL training (`ql_agent.py`, `BaselineAgent`). Full engine stack (attack, detection, response, reward).
+
+Both layers share `grader.py` (score formula), `tasks/` (difficulty configs), and `engines/adaptive_attacker.py` (red-team logic). The HTTP layer is the **authoritative evaluation path** — scores reported by `/state` and `/step` are what count toward the final benchmark. The OOP layer is validated by the test suite (750+ tests) and produces equivalent episode trajectories under the same seed.
+
+---
+
 ### Component Responsibilities
 
 | File | Responsibility |

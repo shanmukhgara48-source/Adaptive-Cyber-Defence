@@ -178,8 +178,12 @@ action_space:
     - monitor_node_5
 
 reward:
-  range: [-0.30, 0.775]
+  range: [0.0, 1.0]
   description: >
+    Step rewards are normalized to [0.0, 1.0]. Final evaluation uses grader_score,
+    which aggregates containment_rate (50%), critical_health (20%),
+    resource_efficiency (15%), and speed_bonus (15%) minus fp_penalty (up to 10%).
+    Internal reward shaping uses delta-alignment: reward = shaping_reward + 0.30 × Δgrader_estimate.
     Mitigation rewards are normalized via (raw + 2.0) / 4.0 → [0.0, 1.0]:
       Correct + instant containment:  raw 1.0 → 0.750 (age < 3 early bonus: raw 1.1 → 0.775).
       Correct + patch queued:         raw 0.80 → 0.700 (patch takes 2 steps to resolve).

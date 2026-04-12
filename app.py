@@ -1432,9 +1432,15 @@ def root():
 
 
 @app.get("/_stcore/health")
-def health():
-    """Liveness probe for HF Spaces and OpenEnv evaluators. Must return plain-text 'ok'."""
+def health_streamlit():
+    """Legacy liveness probe for HF Spaces (Streamlit path). Kept for backward compatibility."""
     return Response(content="ok", media_type="text/plain")
+
+
+@app.get("/health")
+def health():
+    """Standard liveness probe for Docker health checks and OpenEnv evaluators."""
+    return {"status": "ok"}
 
 
 @app.get("/tasks")
