@@ -153,9 +153,7 @@ score ∈ [0.0, 1.0]
 | `hard` | ⭐⭐⭐ | 0.70 | 30 | 5 threats, APT evasion, scarce resources |
 | `nightmare` | ⭐⭐⭐⭐ | 0.80 | 15 | Nation-state attacker, near-zero detection |
 | `elite` | ⭐⭐⭐⭐⭐ | 0.88 | 15 | All nodes pre-compromised, insider threat |
-| `impossible` | 💀 | — | 10 | Ceiling benchmark — no passing threshold |
 
-`impossible` exists to measure frontier model capability — no agent is expected to "pass" it.
 
 ---
 
