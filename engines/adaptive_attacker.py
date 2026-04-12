@@ -33,8 +33,44 @@ from typing import Dict, List, Optional, Tuple
 # ---------------------------------------------------------------------------
 
 _WINDOW_SIZE   = 10      # recent-action sliding window length
-_MIN_EPISODES  = 2       # warm-up before bandit takes over from heuristic
+# _MIN_EPISODES = 0: UCB1 already handles warm-up via the unpulled-arm branch,
+# which pulls each arm exactly once before exploitation begins.  The old value
+# of 2 forced PHISHING for 2 episodes, creating a biased prior that contaminated
+# the bandit's first exploitation phase.
+_MIN_EPISODES  = 0
 _UCB_C         = 1.4142  # UCB1 exploration constant (√2)
+
+
+# ---------------------------------------------------------------------------
+# Action name normalisation
+# Maps caller-side variants → canonical HTTP-API key used by _recalculate_rates().
+# Handles both OOP enum names (BLOCK_IP) and HTTP API names (block_ip) so the
+# attacker profiler works regardless of which layer calls observe_defender_action().
+# ---------------------------------------------------------------------------
+
+_ACTION_NORM: Dict[str, str] = {
+    # OOP enum names (Action.X.name) → HTTP API keys
+    "block_ip":            "block_ip",
+    "BLOCK_IP":            "block_ip",
+    "isolate_node":        "isolate_machine",
+    "ISOLATE_NODE":        "isolate_machine",
+    "isolate_machine":     "isolate_machine",
+    "ISOLATE_MACHINE":     "isolate_machine",
+    "patch_system":        "patch",
+    "PATCH_SYSTEM":        "patch",
+    "patch":               "patch",
+    "PATCH":               "patch",
+    "patch_vulnerability": "patch",
+    "PATCH_VULNERABILITY": "patch",
+    "run_deep_scan":       "scan_node",
+    "RUN_DEEP_SCAN":       "scan_node",
+    "scan_node":           "scan_node",
+    "SCAN_NODE":           "scan_node",
+    "scan":                "scan_node",
+    "SCAN":                "scan_node",
+    "ignore":              "ignore",
+    "IGNORE":              "ignore",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +117,11 @@ class DefenderBehaviorProfile:
         self.rates_dirty   = False
 
     def record_action(self, action_name: str, threat_type: str = "UNKNOWN") -> None:
-        self.action_counts[action_name] += 1
-        self.actions_per_threat_type[threat_type][action_name] += 1
-        self.recent_window.append(action_name)
+        # Normalise to HTTP-API canonical key before recording
+        canonical = _ACTION_NORM.get(action_name, action_name.lower())
+        self.action_counts[canonical] += 1
+        self.actions_per_threat_type[threat_type][canonical] += 1
+        self.recent_window.append(canonical)
         self.steps_observed += 1
         self.rates_dirty = True
 
@@ -287,7 +325,7 @@ class AdaptiveAttacker:
             "spread_rate":            3.0,
         },
         "INSIDER_THREAT": {
-            "initial_attack_type":    "lateral_movement",
+            "initial_attack_type":    "LATERAL_MOVEMENT",   # was "lateral_movement" — engine expects uppercase
             "dwell_time_multiplier":  1.5,
             "detection_evasion":      0.7,
             "spread_rate":            0.8,
@@ -319,8 +357,9 @@ class AdaptiveAttacker:
         self._bandit = UCB1Bandit(arms=self.ALL_STRATEGIES)
 
         # Mid-episode state
-        self._mid_episode_switches: int  = 0     # guard: max 1 switch per episode
-        self._episode_start_strategy: str = "PHISHING"
+        self._mid_episode_switches:   int           = 0         # guard: max 1 switch per episode
+        self._episode_start_strategy: str           = "PHISHING"
+        self._mid_episode_strategy:   Optional[str] = None      # tracks which strategy a mid-ep switch chose
 
     # -----------------------------------------------------------------------
     # Per-step observation
@@ -363,7 +402,8 @@ class AdaptiveAttacker:
 
         # Switch!
         old = self.current_strategy
-        self.current_strategy = ideal_counter
+        self.current_strategy       = ideal_counter
+        self._mid_episode_strategy  = ideal_counter   # record for UCB1 credit split in on_episode_end
         self._mid_episode_switches += 1
         reason = (
             f"Mid-episode switch: window shows {window_label} pattern → "
@@ -435,7 +475,9 @@ class AdaptiveAttacker:
         strategy, reasoning = self.choose_attack_strategy()
         self.current_strategy         = strategy
         self._episode_start_strategy  = strategy
-        self._mid_episode_switches    = 0   # reset per-episode guard
+        self._mid_episode_switches    = 0             # reset per-episode guard
+        self._mid_episode_strategy    = None          # clear stale mid-ep record
+        self.defender_profile.recent_window.clear()   # clear stale window from prior episode
 
         self.defender_profile._recalculate_rates()
         plan = {
@@ -462,9 +504,17 @@ class AdaptiveAttacker:
 
         Updates the UCB1 bandit with attacker reward = 1 - defender_score.
         High defender score → low attacker reward → this strategy is bad for us.
+
+        Credit split: if a mid-episode switch fired, the episode outcome reflects
+        both strategies.  60% of credit goes to the mid-episode strategy (it ran
+        longer and dominated the outcome) and 40% to the start strategy.
         """
         attacker_reward = 1.0 - max(0.0, min(1.0, score))
-        self._bandit.update(self._episode_start_strategy, attacker_reward)
+        if self._mid_episode_switches > 0 and self._mid_episode_strategy:
+            self._bandit.update(self._mid_episode_strategy,   attacker_reward * 0.60)
+            self._bandit.update(self._episode_start_strategy, attacker_reward * 0.40)
+        else:
+            self._bandit.update(self._episode_start_strategy, attacker_reward)
 
         self.episode_count += 1
         if defender_won and score > 0.8:

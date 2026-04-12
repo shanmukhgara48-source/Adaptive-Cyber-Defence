@@ -83,10 +83,14 @@ class ActionMemory:
         self.capacity = capacity
         self.decay = decay
         self._records: deque[OutcomeRecord] = deque(maxlen=capacity)
-        # action → node → (weighted_successes, weighted_total)
+        # action → node → [weighted_successes, weighted_total, last_clock]
+        # last_clock tracks when the entry was last touched so decay is applied
+        # lazily (at read/write time) rather than eagerly across all entries.
+        # This reduces _update_stats from O(A × N) to O(1) per call.
         self._stats: Dict[Action, Dict[str, List[float]]] = defaultdict(
-            lambda: defaultdict(lambda: [0.0, 0.0])
+            lambda: defaultdict(lambda: [0.0, 0.0, 0.0])
         )
+        self._clock: int = 0   # increments on each record() call
 
     # -----------------------------------------------------------------------
     # Recording
@@ -116,15 +120,25 @@ class ActionMemory:
         self._update_stats(action, node_id, success)
 
     def _update_stats(self, action: Action, node_id: str, success: bool) -> None:
-        """Apply exponential decay to existing stats, then add new observation."""
-        for a_key in self._stats:
-            for n_key in self._stats[a_key]:
-                self._stats[a_key][n_key][0] *= self.decay  # weighted successes
-                self._stats[a_key][n_key][1] *= self.decay  # weighted total
+        """O(1) lazy decay: only touch the target entry, not all entries.
 
+        Instead of decaying every (action, node) cell on each write — O(A × N) —
+        we track a global clock and store the last-updated clock per entry.
+        Decay is applied to an entry when it is next read or written, using
+        decay^(clock_now - clock_last).  The numeric result is identical to the
+        eager approach; the cost is O(1) per insert instead of O(A × N).
+        """
+        self._clock += 1
         entry = self._stats[action][node_id]
+        # Apply accumulated decay since this entry was last touched
+        steps_since = self._clock - int(entry[2])
+        if steps_since > 0:
+            factor = self.decay ** steps_since
+            entry[0] *= factor
+            entry[1] *= factor
         entry[0] += 1.0 if success else 0.0
         entry[1] += 1.0
+        entry[2] = float(self._clock)
 
     # -----------------------------------------------------------------------
     # Queries
@@ -145,17 +159,26 @@ class ActionMemory:
         """
         NEUTRAL_PRIOR = 0.5
 
+        def _decayed(entry: List[float]) -> tuple:
+            """Return (successes, total) with accumulated decay applied."""
+            steps_since = self._clock - int(entry[2])
+            factor = self.decay ** steps_since if steps_since > 0 else 1.0
+            return entry[0] * factor, entry[1] * factor
+
         if node_id is not None:
             entry = self._stats[action].get(node_id)
-            if entry and entry[1] > 0:
-                return entry[0] / entry[1]
+            if entry:
+                s, w = _decayed(entry)
+                if w > 1e-9:
+                    return s / w
             # Fall through to global estimate
 
-        # Aggregate across all nodes
+        # Aggregate across all nodes (each may have different last_clock)
         total_w = total_s = 0.0
         for n_entry in self._stats[action].values():
-            total_s += n_entry[0]
-            total_w += n_entry[1]
+            s, w = _decayed(n_entry)
+            total_s += s
+            total_w += w
 
         if total_w < 1e-9:
             return NEUTRAL_PRIOR

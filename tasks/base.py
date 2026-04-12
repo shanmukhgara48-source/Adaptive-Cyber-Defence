@@ -192,7 +192,7 @@ class BaseTask:
         while not done:
             # Snapshot active threat ids + ages before the step so we can detect
             # newly contained threats and record age_at_containment for speed_bonus.
-            prev_active = {t.id: t.age for t in state.active_threats}
+            prev_active = {t.id: t.steps_active for t in state.active_threats}
 
             action = agent.choose(state)
             state, reward, done, info = env.step(action)

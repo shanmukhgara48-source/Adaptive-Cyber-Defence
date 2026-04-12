@@ -37,23 +37,30 @@ class TestOpenEnvYaml:
                     "action", "reward", "termination", "tasks", "network"):
             assert key in doc, f"Missing key: {key}"
 
-    def test_three_task_variants(self):
+    def test_task_variants_present(self):
+        # tasks is a list of dicts with an "id" field (not a plain dict)
         yaml = pytest.importorskip("yaml")
         with open(ROOT / "openenv.yaml") as f:
             doc = yaml.safe_load(f)
         tasks = doc["tasks"]
-        assert "easy" in tasks
-        assert "medium" in tasks
-        assert "hard" in tasks
+        task_ids = [t["id"] for t in tasks]
+        assert "easy"   in task_ids
+        assert "medium" in task_ids
+        assert "hard"   in task_ids
 
-    def test_nine_actions_documented(self):
+    def test_actions_documented(self):
         yaml = pytest.importorskip("yaml")
         with open(ROOT / "openenv.yaml") as f:
             doc = yaml.safe_load(f)
         actions = doc["action"]["actions"]
-        # 4 defense actions (block_ip, isolate_machine, patch, ignore)
-        # + 5 scan_node_X actions = 9 total
-        assert len(actions) == 9
+        action_names = [a["name"] for a in actions]
+        # Core mitigation actions must be present
+        for expected in ("block_ip", "isolate_machine", "patch", "ignore"):
+            assert expected in action_names, f"Missing action: {expected}"
+        # At least one scan action must be present
+        assert any(n.startswith("scan_") for n in action_names), "No scan actions found"
+        # Total count matches current YAML (update if actions are added/removed)
+        assert len(actions) == 19
 
     def test_network_has_five_nodes(self):
         yaml = pytest.importorskip("yaml")

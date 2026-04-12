@@ -164,9 +164,12 @@ def _run_with_attacker(env, task, agent, seed, attacker, strategy):
     state = env.reset(seed=seed)
     step_rewards, breakdowns, resource_leftovers = [], [], []
     threats_seen: set = set()
+    containment_events: list = []   # age_at_containment for speed_bonus
+    prev_active: dict = {}
 
     for t in state.active_threats:
         threats_seen.add(t.id)
+        prev_active[t.id] = t.steps_active
 
     done = False
     while not done:
@@ -177,6 +180,11 @@ def _run_with_attacker(env, task, agent, seed, attacker, strategy):
         if "reward_breakdown" in info:
             breakdowns.append(info["reward_breakdown"])
         resource_leftovers.append(info.get("resource_utilisation", 0.0))
+        current_ids = {t.id for t in state.active_threats}
+        for tid, age in prev_active.items():
+            if tid not in current_ids:
+                containment_events.append({"age_at_containment": age})
+        prev_active = {t.id: t.steps_active for t in state.active_threats}
         for t in state.active_threats:
             threats_seen.add(t.id)
 
@@ -200,7 +208,7 @@ def _run_with_attacker(env, task, agent, seed, attacker, strategy):
         containment_rate=containment_rate,
         critical_health=critical_health,
         avg_resource_left=avg_res,
-        step_rewards=step_rewards,
+        containment_events=containment_events,
     )
 
     terminal_reason = "max_steps"
@@ -239,6 +247,8 @@ def run_verbose_with_env(env, task, agent, seed, attacker, strategy):
     step_rewards, all_threats = [], list(state.active_threats)
     breakdowns, resource_leftovers = [], []
     threats_seen: set = {t.id for t in state.active_threats}
+    containment_events_v: list = []
+    prev_active_v: dict = {t.id: t.steps_active for t in state.active_threats}
     done, step = False, 0
 
     while not done:
@@ -252,6 +262,11 @@ def run_verbose_with_env(env, task, agent, seed, attacker, strategy):
         if "reward_breakdown" in info:
             breakdowns.append(info["reward_breakdown"])
         resource_leftovers.append(info.get("resource_utilisation", 0.0))
+        current_ids_v = {t.id for t in state.active_threats}
+        for tid, age in prev_active_v.items():
+            if tid not in current_ids_v:
+                containment_events_v.append({"age_at_containment": age})
+        prev_active_v = {t.id: t.steps_active for t in state.active_threats}
         for t in state.active_threats:
             threats_seen.add(t.id)
 
@@ -303,7 +318,7 @@ def run_verbose_with_env(env, task, agent, seed, attacker, strategy):
         containment_rate=containment_rate,
         critical_health=critical_health,
         avg_resource_left=avg_res,
-        step_rewards=step_rewards,
+        containment_events=containment_events_v,
     )
     terminal_reason = "max_steps"
     if threats_still == 0 and threats_total > 0:

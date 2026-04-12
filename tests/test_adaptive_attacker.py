@@ -15,11 +15,14 @@ from adaptive_cyber_defense.engines.adaptive_attacker import (
 
 class TestDefenderProfile:
     def test_records_actions(self):
+        # Action names are normalised to HTTP-API keys on ingestion.
+        # "ISOLATE_NODE" → "isolate_machine", "SCAN" → "scan_node"
         profile = DefenderBehaviorProfile()
         profile.record_action("ISOLATE_NODE")
         profile.record_action("ISOLATE_NODE")
         profile.record_action("SCAN")
-        assert profile.action_counts["ISOLATE_NODE"] == 2
+        assert profile.action_counts["isolate_machine"] == 2
+        profile._recalculate_rates()
         assert profile.isolation_rate > 0.5
 
     def test_detects_isolator(self):
@@ -63,13 +66,20 @@ class TestDefenderProfile:
 # ---------------------------------------------------------------------------
 
 class TestAdaptiveAttacker:
-    def test_first_two_episodes_use_phishing(self):
+    def test_first_episodes_explore_all_arms(self):
+        # _MIN_EPISODES=0: UCB1 handles warm-up by pulling each arm once before
+        # exploiting.  Over enough episodes, all strategies must be explored
+        # (UCB1's unpulled-arm branch ensures each arm is pulled at least once
+        # before exploitation begins, though 5% forced-random may delay this by
+        # a few extra episodes).
         attacker = AdaptiveAttacker(seed=42)
-        plan1 = attacker.on_episode_start()
-        assert plan1["attack_strategy"] == "PHISHING"
-        attacker.on_episode_end(False, 0.5)
-        plan2 = attacker.on_episode_start()
-        assert plan2["attack_strategy"] == "PHISHING"
+        strategies_seen = set()
+        for _ in range(30):   # well above n_arms=6 to handle 5% forced-random episodes
+            plan = attacker.on_episode_start()
+            assert plan["attack_strategy"] in AdaptiveAttacker.ALL_STRATEGIES
+            strategies_seen.add(plan["attack_strategy"])
+            attacker.on_episode_end(False, 0.5)
+        assert strategies_seen == set(AdaptiveAttacker.ALL_STRATEGIES)
 
     def test_counters_isolator_with_insider(self):
         # Use seed=0 to avoid the 15% random branch
@@ -137,7 +147,7 @@ class TestAdaptiveAttacker:
         attacker.on_episode_end(False, 0.4)
         report = attacker.get_full_adaptation_report()
         assert "RED TEAM ADAPTATION REPORT" in report
-        assert "Defender strategy" in report
+        assert "Defender profile" in report
 
     def test_episode_count_increments(self):
         attacker = AdaptiveAttacker(seed=42)

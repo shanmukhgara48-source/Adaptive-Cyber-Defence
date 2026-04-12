@@ -16,6 +16,7 @@
 import random
 import logging
 import math
+import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from tasks.nightmare import NightmareTask
 from tasks.elite import EliteTask
 from grader import (
     TASK_PASSING_SCORES,
+    STEP_REWARDS as _SR,
     compute_speed_bonus as _compute_speed_bonus,
     compute_grader_score as _grader_formula,
     compute_criticality_weighted_containment as _criticality_weighted_containment,
@@ -536,6 +538,21 @@ app = FastAPI(title="Adaptive Cyber Defense", version="2.0.0")
 # AdaptiveAttacker is instantiated per-session in /reset to prevent cross-session contamination.
 _ATTACKER_SEED = int(_os.getenv("ATTACKER_SEED", "42"))
 
+
+def _derive_attacker_seed(global_seed: int, session_seed: int) -> int:
+    """Non-linear seed mixing via Knuth multiplicative hash.
+
+    Harder to predict than XOR: an evaluator who knows ATTACKER_SEED=42 and
+    session_seed=0 cannot trivially compute the attacker's RNG state.
+
+    Fully deterministic: same inputs always produce the same output, so
+    reproducibility is preserved while linear predictability is broken.
+    The two large primes avalanche all 32 bits so changing either input
+    produces completely different output across the full range.
+    """
+    mixed = (global_seed * 2654435761 + session_seed * 2246822519) & 0xFFFFFFFF
+    return mixed ^ (mixed >> 16)    # final avalanche step
+
 # ─── SESSION ──────────────────────────────────────────────────────────────────
 # Each call to /reset creates an isolated Session.  Concurrent users/judges
 # each hold their own session_id and never share state.
@@ -561,6 +578,12 @@ class Session:
     containment_events: list = field(default_factory=list)
     attack_plan: dict = field(default_factory=dict)
     rng: random.Random = field(default_factory=lambda: random.Random(0))  # overwritten at reset()
+    # Incremental resource cost accumulator — updated after each action so
+    # _compute_grader_score() reads O(1) instead of re-summing O(steps) each call.
+    _resource_spent: float = 0.0
+    # Per-session lock: guards attacker state (recent_window deque + adaptation logic)
+    # against concurrent /step requests on the same session_id.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     attacker: object = field(default_factory=lambda: None)
 
 
@@ -636,17 +659,10 @@ def _compute_grader_score(sess: "Session") -> float:
     containment_rate = _contained / _total_real
     critical_health = s["system_health"] / 100.0
     _task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-    # Scaled action costs: no correct mitigation exceeds resource_per_step
-    _scaled = get_scaled_costs(_task_budget)
-    # Difficulty-scaled scan/verify cost (same as used in step resource check)
-    _scan_cost_grader   = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
-    _verify_cost_grader = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
-    def _action_cost_grader(a: str) -> float:
-        if a.startswith("scan"):    return _scan_cost_grader
-        if a.startswith("verify"):  return _verify_cost_grader
-        if a.startswith("monitor"): return _MONITOR_COST
-        return _scaled.get(a, 0.0)
-    _total_spent = sum(_action_cost_grader(a) for a in sess.episode_actions_taken)
+    # Use the incrementally maintained total instead of re-summing episode_actions_taken.
+    # The step handler updates sess._resource_spent after each action (O(1) per step),
+    # reducing the per-call cost here from O(steps) to O(1).
+    _total_spent = sess._resource_spent
     _total_budget = max(0.01, _task_budget * sess.task_config.get("max_steps", 50))
     raw_efficiency = max(0.0, 1.0 - _total_spent / _total_budget)
 
@@ -674,8 +690,16 @@ def _compute_grader_score(sess: "Session") -> float:
     resource_efficiency   = raw_efficiency * _efficiency_damping
 
     speed_bonus = _compute_speed_bonus(sess.containment_events)
-    # FP penalty: over-action on ghost alerts, bounded to [0, 1]
-    fp_penalty = min(1.0, sess.false_positive_actions / _total_real)
+    # FP penalty: normalised by total mitigation actions taken (not by real threat count).
+    # Prior formula divided by _total_real: with 5 real threats, 1 FP action costs only
+    # 0.10 × 0.2 = 0.02 — too cheap to deter "act on everything" policies.
+    # Dividing by total mitigations makes the penalty proportional to how often the
+    # agent fires on FPs relative to their own action budget, which is what we want to measure.
+    _total_mitigations = max(1, sum(
+        1 for a in sess.episode_actions_taken
+        if a in {"block_ip", "isolate_machine", "patch"}
+    ))
+    fp_penalty = min(1.0, sess.false_positive_actions / _total_mitigations)
     # Criticality-weighted containment: high-value hub nodes (node_2, node_5) matter more.
     # Blended 60/40 with raw containment_rate inside _grader_formula.
     cwc = _criticality_weighted_containment(s["threats"], NODE_CRITICALITY)
@@ -786,6 +810,7 @@ def _do_reset_session(sess: Session) -> None:
     sess.action_counts          = {}
     sess.containment_events     = []
     sess.attack_plan            = {}
+    sess._resource_spent        = 0.0
 
 
 def _validate_session_state(sess: Session) -> None:
@@ -1454,7 +1479,7 @@ def reset(req: ResetRequest = None):
     # sessions allowed an adversarial agent to predict the attacker's episode-2 strategy
     # pivot across concurrent evaluation sessions — defeating the adaptive red-team goal.
     # XOR preserves the global seed's contribution while adding per-session variation.
-    sess.attacker = AdaptiveAttacker(seed=_ATTACKER_SEED ^ (seed & 0xFFFFFFFF))
+    sess.attacker = AdaptiveAttacker(seed=_derive_attacker_seed(_ATTACKER_SEED, seed))
     _do_reset_session(sess)
     sess.attack_plan = sess.attacker.on_episode_start()
 
@@ -1841,42 +1866,40 @@ def step(req: StepRequest):
         #   ignore with visible threat         → raw -1.50 → 0.125
         if raw_action.startswith("scan"):
             if _resource_exhausted:
-                reward = -0.30
+                reward = _SR["scan_exhausted"]
             elif scan_revealed_real:
-                reward = +0.25
+                reward = _SR["scan_real_threat"]
             elif scan_revealed_fp:
-                reward = -0.05
+                reward = _SR["scan_fp_revealed"]
             elif scan_node_already_contained:
-                reward = -0.20
+                reward = _SR["scan_contained"]
             else:
-                reward = -0.10  # clean node, nothing to find
+                reward = _SR["scan_clean"]
 
         elif raw_action.startswith("verify"):
             if verify_found_threat:
-                reward = +0.15
+                reward = _SR["verify_new_threat"]
             else:
-                reward = -0.08  # wasted — already verified or no visible threat
+                reward = _SR["verify_wasted"]
 
         elif raw_action.startswith("monitor"):
             if monitor_reduced_risk:
-                reward = +0.10
+                reward = _SR["monitor_reduced_risk"]
             else:
-                reward = -0.08  # wasted — nothing resurfaceable here
+                reward = _SR["monitor_wasted"]
 
         elif raw_action == "ignore":
-            reward = _clamp_reward(-1.5)
+            reward = _clamp_reward(_SR["ignore_visible_threat"])
 
         elif raw_action in ("block_ip", "isolate_machine", "patch"):
             if matched and patch_queued:
-                # Delayed mitigation accepted: moderate reward — agent must follow through
-                reward = _clamp_reward(0.80)
+                reward = _clamp_reward(_SR["correct_patch_queued"])
             elif matched:
-                # Instant containment: full reward with early-act bonus
-                reward = _clamp_reward(1.1 if early_bonus else 1.0)
+                reward = _clamp_reward(_SR["correct_early"] if early_bonus else _SR["correct_instant"])
             else:
-                reward = _clamp_reward(-0.50)
+                reward = _clamp_reward(_SR["wrong_action"])
         else:
-            reward = _clamp_reward(-0.50)
+            reward = _clamp_reward(_SR["wrong_action"])
 
         # Running average score — clamped to strict (0, 1) via safe_score
         _all_rewards = sess.episode_rewards + [reward]
@@ -1894,6 +1917,15 @@ def step(req: StepRequest):
         sess.episode_actions_taken.append(raw_action)
         sess.action_counts[raw_action] = sess.action_counts.get(raw_action, 0) + 1
         sess.episode_rewards.append(reward)
+        # Incremental cost accumulation — keeps _compute_grader_score O(1) per call.
+        # Uses the same cost function as the grader: scaled costs + difficulty scan/verify.
+        _scaled_acc    = get_scaled_costs(_task_budget)
+        _scan_acc      = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
+        _verify_acc    = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
+        if raw_action.startswith("scan"):      sess._resource_spent += _scan_acc
+        elif raw_action.startswith("verify"):  sess._resource_spent += _verify_acc
+        elif raw_action.startswith("monitor"): sess._resource_spent += _MONITOR_COST
+        else:                                  sess._resource_spent += _scaled_acc.get(raw_action, 0.0)
 
         obs = _obs(sess)
 
@@ -1915,9 +1947,12 @@ def step(req: StepRequest):
         # Red team
         translated = translate_action(raw_action)
         threat_ctx = (matched_threat_type or "UNKNOWN").upper()
-        sess.attacker.observe_defender_action(translated, threat_ctx)
-        # Adversarial mid-episode strategy switch — no-op for normal sessions
-        _adv_generator.maybe_switch_strategy(sess)
+        # Acquire per-session lock: guards recent_window deque and mid-episode
+        # adaptation logic against concurrent /step calls on the same session_id.
+        with sess._lock:
+            sess.attacker.observe_defender_action(translated, threat_ctx)
+            # Adversarial mid-episode strategy switch — no-op for normal sessions
+            _adv_generator.maybe_switch_strategy(sess)
 
         if s["done"]:
             # Use the single authoritative grader formula (all 4 components)

@@ -165,7 +165,11 @@ class AttackEngine:
 
         for threat in threats:
             if threat.is_contained:
-                updated.append(threat.clone())
+                # Contained threats are never mutated by this engine — pass the
+                # reference directly instead of cloning.  Safe because the engine
+                # contract is stateless: callers must not mutate the returned list
+                # in-place.  Eliminates one dataclass copy per contained threat per step.
+                updated.append(threat)
                 continue
 
             clone = threat.clone()

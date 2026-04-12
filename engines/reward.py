@@ -252,19 +252,38 @@ class RewardFunction:
         bd.containment_bonus = w.containment * min(1.0, containment_raw)
 
         # ---- 2. Severity reduction ----------------------------------------
-        sev_before = state_before.threat_severity
-        sev_after  = state_after.threat_severity
-        sev_reduction = max(0.0, sev_before - sev_after)
+        # Only count severity changes for threats that SURVIVED this step —
+        # newly-contained threats are already credited via containment_bonus.
+        # Computing sev_after over all active threats (including just-contained ones)
+        # would double-count: sev drops by the contained threat's severity AND
+        # containment_bonus fires for the same event.
+        persistent_ids = active_before_ids - newly_contained_ids
+        sev_before_survivors = sum(
+            t.severity for t in state_before.active_threats if t.id in persistent_ids
+        )
+        sev_after_survivors = sum(
+            t.severity for t in state_after.active_threats
+            if t.id in persistent_ids and not t.is_contained
+        )
+        sev_reduction = max(0.0, sev_before_survivors - sev_after_survivors)
         bd.severity_reduction = w.severity * sev_reduction
 
         # ---- 3. Resource efficiency ----------------------------------------
         if resource_pool.total > 0:
             efficiency = resource_pool.remaining / resource_pool.total
         else:
-            efficiency = 1.0
+            # total == 0 means the pool was never initialised or the task has no
+            # budget — treat as 0.0 (not efficient) rather than 1.0.
+            efficiency = 0.0
         bd.resource_efficiency = w.efficiency * efficiency
 
         # ---- 4. Survival bonus (critical assets still healthy) -------------
+        # Scaled inversely with active uncontained threats: full bonus only when
+        # no threats are present (correct no-op scenario).  With N active threats
+        # the bonus shrinks to 1/(1+N) of its maximum, ensuring that:
+        #   survival_bonus < waste_penalty when any threat is unaddressed
+        # This closes the "survival farming" exploit where IGNORE was net-positive
+        # even with active visible threats.
         critical_assets = [
             a for a in network.assets.values() if a.criticality >= 0.7
         ]
@@ -274,7 +293,9 @@ class RewardFunction:
             ) / sum(a.criticality for a in critical_assets)
         else:
             avg_health = 1.0
-        bd.survival_bonus = w.survival * avg_health
+        active_uncontained = len([t for t in state_after.active_threats if not t.is_contained])
+        threat_pressure_scale = 1.0 / (1.0 + active_uncontained)
+        bd.survival_bonus = w.survival * avg_health * threat_pressure_scale
 
         # ---- 5. Spread penalty --------------------------------------------
         spread_raw = 0.0
@@ -291,11 +312,13 @@ class RewardFunction:
             bd.waste_penalty = 0.0
 
         # ---- 7. False positive penalty ------------------------------------
-        fp_count = sum(1 for e in detection_events if e.is_false_positive)
-        # Normalise by number of clean nodes (4 FPs on 8 clean nodes = 0.5 rate)
-        clean_node_count = max(1, len(network.assets) - len(state_after.compromised_nodes))
-        fp_rate = min(1.0, fp_count / clean_node_count)
-        bd.false_positive_penalty = w.false_pos * fp_rate
+        # Removed: the prior implementation penalised detection_events that are
+        # false positives — but these are generated probabilistically by the
+        # detection engine, not by the agent.  Penalising them here creates an
+        # inverted signal (agent punished for environment noise it cannot control).
+        # The authoritative FP penalty (false_positives_acted_on) is applied by
+        # grader.py at episode end where it correctly measures agent decisions.
+        bd.false_positive_penalty = 0.0
 
         # ---- 8. Availability penalty -------------------------------------
         bd.availability_penalty = w.availability * action_result.availability_impact

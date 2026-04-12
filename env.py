@@ -26,6 +26,7 @@ from .engines.decision import (
 )
 from .engines.response import ResponseEngine, ResponseConfig, ActionResult, StateUpdater
 from .engines.reward import RewardFunction, RewardWeights, RewardBreakdown
+from .grader import compute_grader_score, compute_speed_bonus
 from .models.action import Action, ActionInput, ACTION_PROFILES
 from .models.network import NetworkGraph
 from .models.state import (
@@ -145,6 +146,14 @@ class AdaptiveCyberDefenseEnv:
         self._action_history: List[Dict[str, Any]] = []
         self._lateral_events: List[LateralMovementEvent] = []
 
+        # Delta-based reward alignment: tracks grader estimate step-to-step
+        # reward_aligned = shaping_reward + DELTA_BETA × (grader_est_t - grader_est_t-1)
+        self._DELTA_BETA: float = 0.30
+        self._prev_grader_estimate: float = 0.0
+        self._all_threat_ids_seen: set = set()
+        self._logged_containment_ids: set = set()
+        self._containment_events_log: List[Dict[str, int]] = []
+
     # -----------------------------------------------------------------------
     # Adaptive attacker hook
     # -----------------------------------------------------------------------
@@ -200,6 +209,11 @@ class AdaptiveCyberDefenseEnv:
         self._last_detection_events = []
         self._last_threat_scores = []
         self._last_recommendations = []
+        # Reset delta-alignment bookkeeping
+        self._prev_grader_estimate = 0.0
+        self._all_threat_ids_seen = set()
+        self._logged_containment_ids = set()
+        self._containment_events_log = []
         self._attack_engine.reset_counter(base=len(initial_threats))
         self._detection_system.reset()
         self._action_memory.reset()
@@ -311,7 +325,7 @@ class AdaptiveCyberDefenseEnv:
         )
 
         # -- 7. Compute reward via RewardFunction (Phase 6) ------------------
-        reward, reward_breakdown = self._reward_function.compute(
+        shaping_reward, reward_breakdown = self._reward_function.compute(
             state_before=self._current_state,
             state_after=self._build_state(threats_after_response),
             action_result=action_result,
@@ -322,6 +336,17 @@ class AdaptiveCyberDefenseEnv:
             network=self._network,
         )
         self._last_reward_breakdown = reward_breakdown
+
+        # -- 7b. Delta-based reward alignment --------------------------------
+        # Bridges shaping reward and evaluation metric: adds beta × Δgrader_estimate
+        # so the agent receives a positive bonus when its actions improve the
+        # grader score, and a negative signal when they worsen it.
+        # This prevents reward hacking where a high shaping reward does not
+        # translate to a high final grader score.
+        current_grader_est = self._compute_grader_estimate(threats_after_response)
+        delta_score = current_grader_est - self._prev_grader_estimate
+        self._prev_grader_estimate = current_grader_est
+        reward = max(0.0, min(1.0, shaping_reward + self._DELTA_BETA * delta_score))
 
         self._episode_score = min(1.0, self._episode_score + reward / self.config.max_steps)
         self._step_count += 1
@@ -481,6 +506,61 @@ class AdaptiveCyberDefenseEnv:
     def _update_assets(self, threats: List[Threat]) -> None:
         """Delegate to StateUpdater for full asset state update (Phase 5)."""
         self._state_updater.update(self._network, threats, self._lateral_events)
+
+    # -----------------------------------------------------------------------
+    # Grader estimate (for delta-based reward alignment)
+    # -----------------------------------------------------------------------
+
+    def _compute_grader_estimate(self, threats: List[Threat]) -> float:
+        """
+        Compute a running estimate of the grader score using observable metrics.
+
+        This is used exclusively for delta-based reward alignment:
+            delta = grader_est(t) - grader_est(t-1)
+            reward_aligned = shaping_reward + DELTA_BETA × delta
+
+        The estimate uses the same formula as grader.compute_grader_score() but
+        applied to the current (incomplete) episode state.  Even though the
+        absolute value is noisy mid-episode, the DELTA from one step to the next
+        correctly captures whether the action improved the grader metric.
+
+        Side effects: updates _all_threat_ids_seen and _logged_containment_ids,
+        which are episode-scoped and reset in reset().
+        """
+        # Track all threat IDs ever seen in this episode (initial + spawned)
+        for t in threats:
+            self._all_threat_ids_seen.add(t.id)
+            # Log first containment event per threat for speed bonus
+            if t.is_contained and t.id not in self._logged_containment_ids:
+                self._containment_events_log.append(
+                    {"age_at_containment": t.steps_active}
+                )
+                self._logged_containment_ids.add(t.id)
+
+        total = max(1, len(self._all_threat_ids_seen))
+        containment_rate = len(self._logged_containment_ids) / total
+
+        # Critical asset health (assets with criticality >= 0.7)
+        critical_assets = [
+            a for a in self._network.assets.values() if a.criticality >= 0.7
+        ]
+        if critical_assets:
+            critical_health = sum(a.health for a in critical_assets) / len(critical_assets)
+        else:
+            critical_health = 1.0
+
+        # Resource efficiency: fraction of this step's budget not spent
+        resource_efficiency = (
+            self._resource_pool.remaining / self._resource_pool.total
+            if self._resource_pool.total > 0 else 0.0
+        )
+
+        # Speed bonus from containments logged so far
+        speed_bonus = compute_speed_bonus(self._containment_events_log)
+
+        return compute_grader_score(
+            containment_rate, critical_health, resource_efficiency, speed_bonus
+        )
 
     # -----------------------------------------------------------------------
     # State builder

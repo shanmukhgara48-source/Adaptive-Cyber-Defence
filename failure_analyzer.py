@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -144,14 +144,25 @@ class FailureAnalyzer:
     Cross-episode failure tracker.
 
     Accumulates EpisodeRecord objects, then detects weakness patterns by
-    grouping on (attack_strategy, resource_condition, observability_condition)
-    and flagging combinations with fail_rate ≥ threshold.
+    grouping on condition combinations and flagging groups with fail_rate ≥ threshold.
+
+    Adaptive granularity: detect_weaknesses() tries the finest 4D grouping first.
+    If no group has enough samples (_MIN_SAMPLE), it falls back progressively to
+    3D → 2D → 1D, always using the finest granularity that yields valid evidence.
+    This prevents sparsity from silently suppressing all weakness reports.
     """
 
     # Minimum episodes in a scenario group before it's reported as a weakness
     _MIN_SAMPLE = 2
     # Fail-rate threshold to qualify as a weakness
     _FAIL_RATE_THRESHOLD = 0.60
+    # Grouping dimension sets — tried in order from finest to coarsest
+    _GROUPING_LEVELS: List[Tuple] = [
+        ("attack_strategy", "resource_condition", "observability_condition", "health_condition"),
+        ("attack_strategy", "resource_condition", "observability_condition"),
+        ("attack_strategy", "resource_condition"),
+        ("attack_strategy",),
+    ]
 
     def __init__(self) -> None:
         self._records: List[EpisodeRecord] = []
@@ -212,19 +223,37 @@ class FailureAnalyzer:
 
     def detect_weaknesses(self) -> List[WeaknessScenario]:
         """
-        Group episodes by (attack_strategy, resource_condition, observability_condition)
-        and flag groups with enough samples and a high fail rate.
+        Detect recurring weakness scenarios using adaptive dimension fallback.
+
+        Strategy: try the finest grouping first (4D).  If no group has enough
+        samples to be statistically valid (_MIN_SAMPLE), fall back progressively
+        through coarser groupings (3D → 2D → 1D) until at least one valid group
+        is found or all levels are exhausted.
+
+        This prevents sparsity (e.g., 20 episodes across 4×3×3×3 = 108 cells)
+        from silently suppressing all weakness reports — a common failure mode
+        after short training runs.
+
+        Always uses the FINEST granularity that produces evidence; never mixes
+        granularities in a single result set.
 
         Returns a list of WeaknessScenario sorted by fail_rate descending.
         """
-        # group key → list of records
+        for dims in self._GROUPING_LEVELS:
+            result = self._detect_at_granularity(dims)
+            if result:
+                return sorted(result, key=lambda w: -w.fail_rate)
+        return []
+
+    def _detect_at_granularity(self, dims: Tuple[str, ...]) -> List[WeaknessScenario]:
+        """Group episodes by *dims* and return weaknesses found at this granularity."""
         groups: Dict[Tuple, List[EpisodeRecord]] = defaultdict(list)
         for rec in self._records:
-            key = (rec.attack_strategy, rec.resource_condition, rec.observability_condition)
+            key = tuple(getattr(rec, d) for d in dims)
             groups[key].append(rec)
 
         weaknesses: List[WeaknessScenario] = []
-        for (strategy, resource, obs), recs in groups.items():
+        for key, recs in groups.items():
             if len(recs) < self._MIN_SAMPLE:
                 continue
             failed    = [r for r in recs if not r.passed]
@@ -232,25 +261,25 @@ class FailureAnalyzer:
             if fail_rate < self._FAIL_RATE_THRESHOLD:
                 continue
 
-            avg_score = sum(r.score for r in recs) / len(recs)
-            seeds     = [r.seed for r in failed[:3]]
+            avg_score  = sum(r.score for r in recs) / len(recs)
+            seeds      = [r.seed for r in failed[:3]]
+            conditions = dict(zip(dims, key))
 
-            label = _build_weakness_label(strategy, resource, obs)
+            strategy = conditions.get("attack_strategy", "UNKNOWN")
+            resource = conditions.get("resource_condition", "?")
+            obs      = conditions.get("observability_condition", "?")
+            label    = _build_weakness_label(strategy, resource, obs)
+
             weaknesses.append(WeaknessScenario(
                 label         = label,
-                conditions    = {
-                    "attack_strategy":         strategy,
-                    "resource_condition":      resource,
-                    "observability_condition": obs,
-                },
+                conditions    = conditions,
                 fail_count    = len(failed),
                 total_count   = len(recs),
                 fail_rate     = round(fail_rate, 3),
                 avg_score     = round(avg_score, 4),
                 example_seeds = seeds,
             ))
-
-        return sorted(weaknesses, key=lambda w: -w.fail_rate)
+        return weaknesses
 
     def dominant_failure_actions(self, top_n: int = 3) -> List[Tuple[str, float]]:
         """
@@ -411,7 +440,10 @@ class FailureAnalyzer:
         """Dump all episode records to JSON for external analysis."""
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        data = [vars(r) for r in self._records]
+        # dataclasses.asdict() is the correct API: handles nested dataclasses,
+        # provides type-stable output, and is safe against future field additions.
+        # vars() is a shallow dict that can break silently on nested objects.
+        data = [asdict(r) for r in self._records]
         out.write_text(json.dumps(data, indent=2))
         print(f"  [failure_analyzer] Records saved → {out}")
         return out

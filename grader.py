@@ -61,6 +61,38 @@ TASK_PASSING_SCORES: dict[str, float] = {
 
 
 # ---------------------------------------------------------------------------
+# Canonical per-step reward specification
+# Single source of truth for per-step signal values.
+# Imported by app.py (HTTP path) so the reward scale is never silently
+# diverged between the OOP training environment and the HTTP eval path.
+#
+# Scan/verify/monitor values are direct (not clamped).
+# Mitigation values are raw pre-clamp inputs — pass through _clamp_reward()
+# before returning: _clamp_reward(r) = clamp((r + 2.0) / 4.0, 0.001, 0.999)
+# ---------------------------------------------------------------------------
+STEP_REWARDS: dict[str, float] = {
+    # ── Scan actions ─────────────────────────────────────────────────────
+    "scan_real_threat":      +0.25,   # scan revealed a hidden real threat
+    "scan_fp_revealed":      -0.05,   # scan revealed only a false positive
+    "scan_clean":            -0.10,   # scan found nothing (clean node)
+    "scan_contained":        -0.20,   # scan on a node with only contained threats
+    "scan_exhausted":        -0.30,   # scan while resource budget is exhausted
+    # ── Verify actions ───────────────────────────────────────────────────
+    "verify_new_threat":     +0.15,   # verify confirmed an unverified visible threat
+    "verify_wasted":         -0.08,   # verify on node with nothing new to confirm
+    # ── Monitor actions ──────────────────────────────────────────────────
+    "monitor_reduced_risk":  +0.10,   # monitor reduced resurface risk for a threat
+    "monitor_wasted":        -0.08,   # monitor on node with nothing resurfaceable
+    # ── Mitigation raw pre-clamp values ──────────────────────────────────
+    "correct_early":         +1.10,   # correct action, threat age < 3
+    "correct_instant":       +1.00,   # correct instant mitigation (block_ip/isolate)
+    "correct_patch_queued":  +0.80,   # correct delayed patch action (still active)
+    "wrong_action":          -0.50,   # wrong MITRE action for threat type
+    "ignore_visible_threat": -1.50,   # ignore while at least one visible threat exists
+}
+
+
+# ---------------------------------------------------------------------------
 # Speed bonus component
 # ---------------------------------------------------------------------------
 
@@ -81,7 +113,10 @@ def compute_speed_bonus(containment_events: list, lambda_decay: float = 0.35) ->
     if not containment_events:
         return 0.0
     scores = [
-        round(_math.exp(-lambda_decay * ev.get("age_at_containment", 99)), 4)
+        # Default 5: median expected containment age; avoids silently zeroing the
+        # component (old default 99 → exp(-34.6) ≈ 0) when the field is missing.
+        # age=0 (contained the step it was detected) maps to exp(0)=1.0 — intentional.
+        round(_math.exp(-lambda_decay * ev.get("age_at_containment", 5)), 4)
         for ev in containment_events
     ]
     return round(sum(scores) / len(scores), 4)
@@ -152,7 +187,10 @@ def compute_grader_score(
                                        to prioritise high-value nodes over easy targets.
                                        Default None → uses raw containment_rate only.
     """
-    _EPSILON = 1e-6
+    # 1e-4 = 0.0001, consistent with safe_score()'s boundary.
+    # The prior value of 1e-6 was below round(..., 4) precision:
+    #   round(1e-6, 4) = 0.0  →  clamp had no effect before safe_score rescued it.
+    _EPSILON = 1e-4
     fp = min(1.0, max(0.0, float(fp_penalty)))
     # Criticality blending: prioritise hub/high-value node containment in scoring.
     if criticality_weighted_containment is not None:

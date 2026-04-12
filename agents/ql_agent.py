@@ -1,17 +1,23 @@
 """
-Simple Q-Learning agent for the Adaptive Cyber Defense Simulator.
+Q-Learning agents for the Adaptive Cyber Defense Simulator.
 
-State space  : (threat_level, resource_level)  — 6 states max
+Two agents are provided:
+  QLearningAgent   — Tabular Q-learning.
+  LinearFAAgent    — Linear function approximation (Q(s,a) = w[a] · φ(s)).
+
+State space  : 6-dimensional discrete tuple — max 576 states (tabular),
+               or a 7-element continuous feature vector (linear FA).
 Action space : BLOCK_IP | ISOLATE_NODE | PATCH_SYSTEM | RUN_DEEP_SCAN | IGNORE
-Q-table      : dict  Q[(state, action)] = float
+Q-table      : dict  Q[(state, action)] = float  (tabular)
+Weights      : dict  w[action] = List[float]     (linear FA)
 
 Usage
 -----
-    from adaptive_cyber_defense.agents.ql_agent import QLearningAgent, train
+    from adaptive_cyber_defense.agents.ql_agent import QLearningAgent, LinearFAAgent, train
     from adaptive_cyber_defense import AdaptiveCyberDefenseEnv
 
     env    = AdaptiveCyberDefenseEnv()
-    agent  = QLearningAgent()
+    agent  = LinearFAAgent()          # or QLearningAgent()
     result = train(agent, env, episodes=50)
     print(result["avg_reward"])
 """
@@ -45,12 +51,31 @@ ACTIONS: List[Action] = [
 # State discretisation
 # ---------------------------------------------------------------------------
 
-def discretise(env_state: EnvironmentState) -> Tuple[str, str]:
+def discretise(env_state: EnvironmentState) -> Tuple[str, str, str, str, str, int]:
     """
-    Compress continuous env state into a 2-key tuple.
+    Compress continuous env state into a 6-key tuple.
 
-    threat_level  : "low" (<0.33) | "medium" (<0.66) | "high" (>=0.66)
-    resource_level: "low" (<0.50) | "high" (>=0.50)
+    threat_level      : "low" (<0.33) | "medium" (<0.66) | "high" (>=0.66)
+    resource_level    : "low" (<0.50) | "high" (>=0.50)
+    threat_stage      : top-threat's AttackStage name in lowercase, or "none"
+    persistence       : "p" (persistent threat) | "n" (non-persistent)
+                        Persistent threats (malware, ransomware, lateral_movement) resurface
+                        after containment — the agent needs to monitor them.  Non-persistent
+                        ones (phishing, ddos) do not.  Same MITRE action but different
+                        post-containment behaviour: this dimension captures that difference.
+    spread_class      : "hi" (spread_rate > 0.5) | "lo"
+                        High spread-rate identifies ransomware / lateral_movement even when
+                        stage and severity look like malware — enabling the Q-table to learn
+                        that these need faster isolation than a slow-spreading malware threat.
+    threat_count_bucket: min(len(active_threats), 3) — 0/1/2/3
+                        Captures multi-threat pressure without state explosion.
+                        Bucket 3 means "3 or more concurrent threats", signalling that
+                        the agent must triage rather than focus on a single threat.
+
+    Max states: 3 × 2 × 6 × 2 × 2 × 4 = 576.  Still fully tabular; fits in <10 KB.
+    Backward compat: old 5-tuple Q-tables have key shape (tuple of length 5, str).
+    The new shape (tuple of length 6, str) is disjoint — the load() validator skips
+    mismatched entries with a warning rather than silently zeroing them.
     """
     sev = env_state.threat_severity
     if sev < 0.33:
@@ -62,7 +87,22 @@ def discretise(env_state: EnvironmentState) -> Tuple[str, str]:
 
     resource_level = "low" if env_state.resource_availability < 0.50 else "high"
 
-    return (threat_level, resource_level)
+    # Stage, persistence, and spread class of highest-severity active threat
+    threat_stage = "none"
+    persistence  = "n"
+    spread_class = "lo"
+    if env_state.active_threats:
+        top = max(env_state.active_threats, key=lambda t: t.severity)
+        threat_stage = top.stage.name.lower()   # e.g. "phishing", "lateral_spread"
+        # getattr with defaults: safe whether or not the Threat model exposes these fields
+        persistence  = "p" if getattr(top, "is_persistent", False) else "n"
+        spread_class = "hi" if getattr(top, "spread_rate", 0.0) > 0.5 else "lo"
+
+    # Multi-threat awareness: bucket active threat count, capped at 3
+    threat_count_bucket = min(len(env_state.active_threats), 3)
+
+    return (threat_level, resource_level, threat_stage, persistence, spread_class,
+            threat_count_bucket)
 
 
 def extract_state(env_state: "EnvironmentState") -> tuple:
@@ -83,12 +123,13 @@ class QLearningAgent:
     Tabular Q-Learning agent.
 
     Q-table: Q[(state_tuple, action_name)] = float, initialised to 0.
+    state_tuple = discretise(env_state) — 6-dimensional tuple, up to 576 distinct states.
 
     Hyperparameters
     ---------------
     alpha   : learning rate            (default 0.1)
     gamma   : discount factor          (default 0.9)
-    epsilon : exploration probability  (default 0.2, fixed)
+    epsilon : exploration probability  (default 0.2, decayed each episode via decay_epsilon)
     """
 
     def __init__(
@@ -201,29 +242,320 @@ class QLearningAgent:
         Path(path).write_text(json.dumps(data, indent=2))
 
     def load(self, path: str) -> None:
-        """Load Q-table from JSON."""
+        """Load Q-table from JSON.
+
+        Malformed entries are skipped with a warning rather than silently dropped.
+        A corrupt file that zeroes out the Q-table is now visible rather than
+        causing the agent to behave randomly without any diagnostic signal.
+        """
+        import ast
+        import warnings
         data = json.loads(Path(path).read_text())
         self.alpha   = data.get("alpha",   self.alpha)
         self.gamma   = data.get("gamma",   self.gamma)
         self.epsilon = data.get("epsilon", self.epsilon)
         self.Q = {}
+        skipped = 0
         for key_str, val in data.get("Q", {}).items():
-            # Reconstruct tuple key from string representation
-            # Format: "((threat_level, resource_level), action_name)"
-            import ast
+            # Reconstruct tuple key: "((state_tuple...), action_name)"
             try:
                 key = ast.literal_eval(key_str)
+                # Validate: must be a 2-tuple of (tuple, str)
+                if (not isinstance(key, tuple) or len(key) != 2
+                        or not isinstance(key[0], tuple)
+                        or not isinstance(key[1], str)):
+                    skipped += 1
+                    continue
                 self.Q[key] = float(val)
             except Exception:
-                pass  # skip malformed entries
+                skipped += 1
+        if skipped:
+            warnings.warn(
+                f"[QLearningAgent.load] Skipped {skipped} malformed Q-table "
+                f"entries from '{path}'. The agent may behave as partially untrained. "
+                "Re-train or inspect the file for corruption.",
+                UserWarning,
+                stacklevel=2,
+            )
 
 
 # ---------------------------------------------------------------------------
-# Training loop
+# Linear function approximation — feature extractor
+# ---------------------------------------------------------------------------
+
+# Ordered stage names → normalized index in [0, 1]
+_STAGE_NORM: dict = {
+    "none":             0.0,
+    "phishing":         0.2,
+    "credential_access": 0.4,
+    "malware_install":  0.6,
+    "lateral_spread":   0.8,
+    "exfiltration":     1.0,
+}
+
+_N_FEATURES = 7   # 6 state features + 1 bias
+
+
+def extract_features(env_state: "EnvironmentState") -> List[float]:
+    """
+    Map EnvironmentState to a fixed-length feature vector for linear FA.
+
+    Feature vector (length 7):
+      [0] threat_level_norm     — 0.0 (low) | 0.5 (medium) | 1.0 (high)
+      [1] resource_level_norm   — 0.0 (low) | 1.0 (high)
+      [2] threat_stage_norm     — 0.0–1.0 normalized kill-chain stage index
+      [3] persistence_bin       — 0.0 (non-persistent) | 1.0 (persistent)
+      [4] spread_class_bin      — 0.0 (lo spread) | 1.0 (hi spread)
+      [5] threat_count_norm     — min(n_threats, 3) / 3.0  in {0, 0.33, 0.67, 1.0}
+      [6] bias                  — always 1.0  (intercept term)
+
+    Design: all features are in [0, 1] so weight magnitudes are directly
+    comparable.  The bias term allows Q(s, a) ≠ 0 even when all state
+    features are zero (e.g. no active threats at episode start).
+    """
+    sev = env_state.threat_severity
+    if sev < 0.33:
+        threat_level_norm = 0.0
+    elif sev < 0.66:
+        threat_level_norm = 0.5
+    else:
+        threat_level_norm = 1.0
+
+    resource_level_norm = 0.0 if env_state.resource_availability < 0.50 else 1.0
+
+    threat_stage_norm = 0.0
+    persistence_bin   = 0.0
+    spread_class_bin  = 0.0
+    if env_state.active_threats:
+        top = max(env_state.active_threats, key=lambda t: t.severity)
+        stage_name = top.stage.name.lower()
+        threat_stage_norm = _STAGE_NORM.get(stage_name, 0.0)
+        persistence_bin   = 1.0 if getattr(top, "is_persistent", False) else 0.0
+        spread_class_bin  = 1.0 if getattr(top, "spread_rate", 0.0) > 0.5 else 0.0
+
+    threat_count_norm = min(len(env_state.active_threats), 3) / 3.0
+
+    return [
+        threat_level_norm,
+        resource_level_norm,
+        threat_stage_norm,
+        persistence_bin,
+        spread_class_bin,
+        threat_count_norm,
+        1.0,   # bias
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Linear function approximation Q-agent
+# ---------------------------------------------------------------------------
+
+class LinearFAAgent:
+    """
+    Linear function approximation Q-agent.
+
+    Q(s, a) = w[a] · φ(s)
+
+    where φ(s) is a 7-element feature vector from extract_features() and
+    w[a] is a per-action weight vector initialised to zeros.
+
+    Update rule (semi-gradient TD):
+        δ    = r + γ · max_a' Q(s', a') − Q(s, a)
+        w[a] ← w[a] + α · δ · φ(s)
+
+    Compared to tabular QL:
+        + Generalises across unseen (state, action) pairs
+        + Weight vector has 5 × 7 = 35 parameters vs up to 576 × 5 = 2880
+          Q-table entries — learns faster from sparse data
+        + Smooth value surface avoids tabular artefacts at state boundaries
+
+    API is identical to QLearningAgent: get_action / choose / select_action /
+    update / decay_epsilon / save / load.  Training scripts work with either
+    agent without modification.
+    """
+
+    def __init__(
+        self,
+        alpha:   float = 0.05,
+        gamma:   float = 0.9,
+        epsilon: float = 0.2,
+    ) -> None:
+        self.alpha   = alpha
+        self.gamma   = gamma
+        self.epsilon = epsilon
+
+        # Per-action weight vectors — zero-initialised
+        # Positively initialised bias weight encourages early exploration
+        # over the zero-value baseline.
+        self.weights: Dict[Action, List[float]] = {
+            a: [0.0] * _N_FEATURES for a in ACTIONS
+        }
+        # Give bias term a small positive start so random tie-breaking is
+        # uniform across actions before any update.
+        for a in ACTIONS:
+            self.weights[a][-1] = 0.01
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _q(self, features: List[float], action: Action) -> float:
+        """Q(s, a) = dot(w[a], φ(s))."""
+        w = self.weights[action]
+        return sum(wi * fi for wi, fi in zip(w, features))
+
+    def _best_action(self, features: List[float]) -> Action:
+        """Greedy action: argmax_a Q(s, a)."""
+        return max(ACTIONS, key=lambda a: self._q(features, a))
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def get_action(self, env_state: "EnvironmentState") -> "ActionInput":
+        """Epsilon-greedy action selection."""
+        features = extract_features(env_state)
+        if random.random() < self.epsilon:
+            action = random.choice(ACTIONS)
+        else:
+            action = self._best_action(features)
+        return ActionInput(action=action)
+
+    def choose(self, env_state: "EnvironmentState") -> "ActionInput":
+        """Greedy (ε=0) selection — used by UI and task.run()."""
+        features = extract_features(env_state)
+        action   = self._best_action(features)
+        return ActionInput(action=action)
+
+    def select_action(self, env_state: "EnvironmentState") -> "ActionInput":
+        """Alias for get_action() — training script compatibility."""
+        return self.get_action(env_state)
+
+    def update(
+        self,
+        state:      Tuple,           # unused — kept for API parity with QLearningAgent
+        action:     Action,
+        reward:     float,
+        next_state: Tuple,           # unused — see below
+        done:       bool,
+        features:        Optional[List[float]] = None,
+        next_features:   Optional[List[float]] = None,
+    ) -> None:
+        """
+        Semi-gradient TD update.
+
+        The tabular API passes (state, action, reward, next_state, done) where
+        state/next_state are discrete tuples.  LinearFAAgent additionally accepts
+        the raw feature vectors via keyword args so training code can avoid
+        calling extract_features() twice.  If not provided, the method falls
+        back to accepting them via the positional args when they happen to be
+        lists (duck-typed for backward compat).
+
+        Semi-gradient (not full gradient) because we do NOT differentiate
+        through the target — standard practice for stability.
+        """
+        # Resolve features: accept raw feature lists passed positionally as
+        # state/next_state for convenience in training loops that already have
+        # them, or use the keyword-argument path for clarity.
+        if features is None:
+            features = list(state) if isinstance(state, (list, tuple)) and len(state) == _N_FEATURES else None
+        if next_features is None:
+            next_features = list(next_state) if isinstance(next_state, (list, tuple)) and len(next_state) == _N_FEATURES else None
+
+        # Fallback: if we still have no feature vectors, we cannot update.
+        # This happens when called via the tabular train() loop with discrete
+        # tuples — the caller must pass feature vectors explicitly.
+        if features is None or next_features is None:
+            return
+
+        q_sa = self._q(features, action)
+        if done:
+            target = reward
+        else:
+            best_next_q = max(self._q(next_features, a) for a in ACTIONS)
+            target = reward + self.gamma * best_next_q
+
+        td_error = target - q_sa
+        w = self.weights[action]
+        for i in range(_N_FEATURES):
+            w[i] += self.alpha * td_error * features[i]
+
+    def update_from_features(
+        self,
+        features:      List[float],
+        action:        Action,
+        reward:        float,
+        next_features: List[float],
+        done:          bool,
+    ) -> None:
+        """
+        Primary update path for LinearFAAgent training.
+
+        Preferred over update() when feature vectors are already computed
+        (avoids re-computing them inside update).
+        """
+        q_sa = self._q(features, action)
+        if done:
+            target = reward
+        else:
+            best_next_q = max(self._q(next_features, a) for a in ACTIONS)
+            target = reward + self.gamma * best_next_q
+
+        td_error = target - q_sa
+        w = self.weights[action]
+        for i in range(_N_FEATURES):
+            w[i] += self.alpha * td_error * features[i]
+
+    def decay_epsilon(self) -> None:
+        """Decay epsilon by 0.995, floor 0.05."""
+        self.epsilon = max(0.05, self.epsilon * 0.995)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        """Serialise weights to JSON."""
+        import json
+        from pathlib import Path
+        data = {
+            "alpha":   self.alpha,
+            "gamma":   self.gamma,
+            "epsilon": self.epsilon,
+            "weights": {a.name: w for a, w in self.weights.items()},
+        }
+        Path(path).write_text(json.dumps(data, indent=2))
+
+    def load(self, path: str) -> None:
+        """Load weights from JSON."""
+        import json
+        import warnings
+        from pathlib import Path
+        data = json.loads(Path(path).read_text())
+        self.alpha   = data.get("alpha",   self.alpha)
+        self.gamma   = data.get("gamma",   self.gamma)
+        self.epsilon = data.get("epsilon", self.epsilon)
+        raw = data.get("weights", {})
+        loaded = 0
+        for a in ACTIONS:
+            w = raw.get(a.name)
+            if w and len(w) == _N_FEATURES:
+                self.weights[a] = [float(x) for x in w]
+                loaded += 1
+        if loaded < len(ACTIONS):
+            warnings.warn(
+                f"[LinearFAAgent.load] Loaded {loaded}/{len(ACTIONS)} weight "
+                f"vectors from '{path}'. Missing actions use zero-init.",
+                UserWarning, stacklevel=2,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Training loop (shared by QLearningAgent and LinearFAAgent)
 # ---------------------------------------------------------------------------
 
 def train(
-    agent:    QLearningAgent,
+    agent,
     env,
     episodes: int = 50,
     max_steps: int = 200,
@@ -233,57 +565,80 @@ def train(
     """
     Train *agent* on *env* for *episodes* episodes.
 
+    Works with both QLearningAgent (tabular) and LinearFAAgent (linear FA).
+    For LinearFAAgent, update_from_features() is called with pre-computed
+    feature vectors so extract_features() is never called twice per step.
+
     Each episode:
         1. Reset env
         2. Loop until done or max_steps
         3. Select action (epsilon-greedy)
         4. Step env, observe reward
-        5. Update Q-table
+        5. Update agent
 
     Returns
     -------
     dict with keys:
         rewards   : list of total reward per episode
         avg_reward: float — mean over all episodes
-        q_table   : the trained Q-table dict
+        q_table   : Q-table dict (QLearningAgent) or weights dict (LinearFAAgent)
     """
+    is_linear = isinstance(agent, LinearFAAgent)
     rewards: List[float] = []
 
     for ep in range(1, episodes + 1):
         obs       = env.reset(seed=seed_offset + ep)
-        state     = discretise(obs)
         total_r   = 0.0
+
+        if is_linear:
+            features = extract_features(obs)
+        else:
+            state = discretise(obs)
 
         for _ in range(max_steps):
             action_input = agent.get_action(obs)
             action       = action_input.action
 
             obs, reward, done, _ = env.step(action_input)
-            next_state           = discretise(obs)
-
-            agent.update(state, action, reward, next_state, done)
-
-            state   = next_state
             total_r += reward
+
+            if is_linear:
+                next_features = extract_features(obs)
+                agent.update_from_features(features, action, reward, next_features, done)
+                features = next_features
+            else:
+                next_state = discretise(obs)
+                agent.update(state, action, reward, next_state, done)
+                state = next_state
 
             if done:
                 break
 
         rewards.append(total_r)
+        agent.decay_epsilon()
 
         if verbose and ep % 10 == 0:
             avg10 = sum(rewards[-10:]) / min(10, len(rewards))
+            if is_linear:
+                n_params = sum(1 for w in agent.weights.values() for _ in w if _ != 0.0)
+                extra = f"non-zero-weights={n_params}"
+            else:
+                extra = f"Q-entries={len(agent.Q)}"
             print(f"  ep {ep:>3} / {episodes}  "
                   f"reward={total_r:>8.4f}  avg(10)={avg10:>8.4f}  "
-                  f"Q-entries={len(agent.Q)}")
+                  f"{extra}")
 
     avg_reward = sum(rewards) / len(rewards)
 
-    return {
+    result = {
         "rewards":    rewards,
         "avg_reward": avg_reward,
-        "q_table":    agent.Q,
     }
+    if is_linear:
+        result["weights"] = agent.weights
+    else:
+        result["q_table"] = agent.Q
+    return result
 
 
 # ---------------------------------------------------------------------------
