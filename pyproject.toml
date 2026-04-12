@@ -14,3 +14,8 @@ server = "server.app:main"
 
 [tool.openenv]
 entrypoint = "server.app:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Do not recurse into the installed venv copy of the package
+norecursedirs = ["venv", ".venv", "build", "dist", "*.egg-info"]

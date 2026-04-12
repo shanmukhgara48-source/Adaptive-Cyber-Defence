@@ -860,7 +860,19 @@ def enrich_threat(threat: dict) -> dict:
 
 def _update_visibility(sess: Session) -> None:
     """Auto-reveal threats based on age or lateral movement, gated by task difficulty.
-    Uses effective_config so attacker detection_evasion actually reduces visibility."""
+    Uses effective_config so attacker detection_evasion actually reduces visibility.
+
+    RNG discipline: exactly 2 calls are consumed per eligible (non-contained, non-visible,
+    non-FP) threat regardless of which branch is taken.  This keeps the RNG sequence
+    length uniform as a threat transitions between the "below age threshold" state and the
+    "lateral_movement" state, preserving seed-based reproducibility across all episodes.
+
+    Bug fixed (v2.1): the original lateral_movement path consumed only 1 RNG call and
+    did NOT apply detect_prob.  On elite (detect_prob=0.08, fn_rate=0.15) a threat that
+    escalated to lateral_movement stage had an 85% reveal chance — 10× higher than the
+    intended 8%.  This made elite difficulty trivially solvable by ignoring threats until
+    they spread (improving observability) rather than acting early.
+    """
     eff          = sess.effective_config if sess.effective_config else sess.task_config
     age_thresh   = eff.get("age_visibility_threshold", sess.task_config.get("age_visibility_threshold", 5))
     detect_prob  = eff.get("base_detection_prob", 1.0)
@@ -870,11 +882,18 @@ def _update_visibility(sess: Session) -> None:
             continue
         if t.get("is_false_positive"):
             continue  # FPs are immediately visible when created
+        # Always consume exactly 2 RNG calls so the sequence length is invariant
+        # over all threat states (lateral_movement vs age-threshold vs below-threshold).
+        _roll1 = sess.rng.random()
+        _roll2 = sess.rng.random()
         if t["stage"] == "lateral_movement":
-            if sess.rng.random() > fn_rate:
+            # Lateral movement now obeys detect_prob just like age-based detection.
+            # The original code skipped detect_prob here, making lateral-movement
+            # threats 10× easier to detect on elite than intended.
+            if _roll1 < detect_prob and _roll2 > fn_rate:
                 t["visible"] = True
         elif t["age"] >= age_thresh:
-            if sess.rng.random() < detect_prob and sess.rng.random() > fn_rate:
+            if _roll1 < detect_prob and _roll2 > fn_rate:
                 t["visible"] = True
     _maybe_generate_false_positive(sess)
 
@@ -1460,7 +1479,12 @@ def reset(req: ResetRequest = None):
     _evict_oldest_sessions()
     sess = Session(task_name=task_name, task_config=task_cfg)
     sess.rng = random.Random(seed)
-    sess.attacker = AdaptiveAttacker(seed=_ATTACKER_SEED)
+    # XOR the global attacker seed with the episode seed so every session gets a
+    # distinct AdaptiveAttacker initial state.  Using a constant seed (42) for all
+    # sessions allowed an adversarial agent to predict the attacker's episode-2 strategy
+    # pivot across concurrent evaluation sessions — defeating the adaptive red-team goal.
+    # XOR preserves the global seed's contribution while adding per-session variation.
+    sess.attacker = AdaptiveAttacker(seed=_ATTACKER_SEED ^ (seed & 0xFFFFFFFF))
     _do_reset_session(sess)
     sess.attack_plan = sess.attacker.on_episode_start()
 
@@ -1738,12 +1762,14 @@ def step(req: StepRequest):
 
             for t in s["threats"]:
                 if t["visible"] and not t.get("contained"):
-                    # Skip threats already being mitigated by a queued patch
+                    # Skip threats already being mitigated by a queued patch.
+                    # Use continue (not break) so subsequent visible threats can still be targeted.
+                    # A break here would silently block the agent from acting on a second visible
+                    # threat that does NOT have a pending action — the worst-case scenario is two
+                    # visible threats where the first has a pending patch and the second is actively
+                    # spreading to a hub node: the defender could never contain the second one.
                     if t.get("pending_action"):
-                        matched_threat_type = t.get("original_type", t["type"])
-                        reason = "Mitigation already in progress for this threat."
-                        confidence = 0.50
-                        break
+                        continue
                     # Use original_type for MITRE lookup — type is preserved even after
                     # stage escalation so agents are never penalized for correct identification.
                     correct = _get_correct_action(t.get("original_type", t["type"]), t.get("severity", 0.5), t.get("stage", "initial"))
@@ -1799,7 +1825,11 @@ def step(req: StepRequest):
                     if t["visible"] and not t.get("contained"):
                         matched_threat_type = t.get("original_type", t.get("type"))
                         break
-                if raw_action == "ignore":
+                # Only penalise ignore when there was an active visible threat to act on.
+                # Penalising ignore when no threats are visible punishes a correct no-op
+                # (e.g. step 0 before any threat becomes visible) and corrupts health
+                # baselines for zero-threat and early-episode edge cases.
+                if raw_action == "ignore" and matched_threat_type is not None:
                     s["system_health"] = max(0, s["system_health"] - 10)
                 elif not unverified_penalty and not patch_queued:
                     s["system_health"] = max(0, s["system_health"] - 5)
@@ -1901,6 +1931,15 @@ def step(req: StepRequest):
         if s["system_health"] <= 0 or s["step"] >= sess.task_config.get("max_steps", 50):
             s["done"] = True
 
+        # Append the current action and reward BEFORE calling _obs() so that
+        # _compute_grader_score() sees the complete action history including this step.
+        # The original code appended after _obs(), causing resource_efficiency in the
+        # step response to be one action stale — the grader under-counted spent resources,
+        # making resource_efficiency artificially inflated on every non-final step.
+        sess.episode_actions_taken.append(raw_action)
+        sess.action_counts[raw_action] = sess.action_counts.get(raw_action, 0) + 1
+        sess.episode_rewards.append(reward)
+
         obs = _obs(sess)
 
         sess.history.append({"step": s["step"], "action": raw_action,
@@ -1908,18 +1947,6 @@ def step(req: StepRequest):
         sess.episode_history.append({"step": s["step"], "action": raw_action,
                                      "reward": float(reward), "done": bool(s["done"]),
                                      "reason": reason})
-
-        # Analytics tracking
-        sess.episode_actions_taken.append(raw_action)
-        sess.action_counts[raw_action] = sess.action_counts.get(raw_action, 0) + 1
-        sess.episode_rewards.append(reward)
-        _MITIGATIONS = {"block_ip", "isolate_machine", "patch"}
-        # Note: false_positive_actions is now tracked in the defense loop (FP threats)
-        # and here for wrong mitigations on real threats (matched=False, action!=FP)
-        if raw_action in _MITIGATIONS and not matched and matched_threat_type is not None:
-            # Only count as FP if we targeted something but matched=False and it wasn't an FP threat
-            # (FP threats already incremented false_positive_actions in the defense loop)
-            pass  # false_positive_actions now tracked centrally in defense loop
         for threat in obs.get("visible_threats", []):
             tid = threat.get("id", "")
             if tid:
@@ -2256,10 +2283,18 @@ def get_analytics(session_id: str | None = None):
         })
 
         # Resources remaining: fraction of cumulative budget not yet spent.
-        # Total budget = resource_per_step × max_steps; total spent = sum of raw action costs.
+        # Must use difficulty-scaled scan/verify costs (same as grader and step layer)
+        # so that resources_remaining here matches what the agent sees in /step responses.
+        # The original code used a hardcoded 0.2 scan fallback — on hard (scan_cost=0.45)
+        # this understated scan spending by 2.25× and inflated resources_remaining.
         task_budget = max(0.01, sess.task_config.get("resource_per_step", 1.0))
+        _scan_cost_anal   = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
+        _verify_cost_anal = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
         total_spent = sum(
-            COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
+            (_scan_cost_anal   if a.startswith("scan")    else
+             _verify_cost_anal if a.startswith("verify")  else
+             _MONITOR_COST     if a.startswith("monitor") else
+             COST_RAW.get(a, 0.0))
             for a in sess.episode_actions_taken
         )
         total_budget = max(0.01, task_budget * sess.task_config.get("max_steps", 50))
@@ -2384,8 +2419,14 @@ def observe(session_id: str | None = None):
         spawned       = max(1, len(sess.state["threats"]))
         containment_rate = round(n_contained / spawned, 3)
         task_budget   = max(0.01, sess.task_config.get("resource_per_step", 1.0))
-        total_spent   = sum(COST_RAW.get(a, 0.2 if a.startswith("scan") else 0.0)
-                            for a in sess.episode_actions_taken)
+        _scan_cost_obs2   = _SCAN_COST_BY_DIFFICULTY.get(sess.task_name, 0.20)
+        _verify_cost_obs2 = _VERIFY_COST_BY_DIFFICULTY.get(sess.task_name, 0.15)
+        total_spent   = sum(
+            (_scan_cost_obs2   if a.startswith("scan")    else
+             _verify_cost_obs2 if a.startswith("verify")  else
+             _MONITOR_COST     if a.startswith("monitor") else
+             COST_RAW.get(a, 0.0))
+            for a in sess.episode_actions_taken)
         total_budget  = max(0.01, task_budget * sess.task_config.get("max_steps", 50))
         resources_remaining = round(max(0.0, 1.0 - total_spent / total_budget), 3)
         if containment_rate >= 0.8 and sys_health >= 70:
